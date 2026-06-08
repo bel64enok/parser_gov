@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import config  # noqa: F401 — загружает .env до импорта analyzer/ai
+
 import os
 import sys
 import traceback

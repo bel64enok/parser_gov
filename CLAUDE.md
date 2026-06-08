@@ -9,12 +9,18 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
+cp .env.example .env                       # optional: AI stage — fill RMR_API_KEY
 python pipeline.py "мобильная связь" 10   # fill the store (fetch + analyze)
 python app.py                              # serve UI at http://127.0.0.1:8000
 PORT=9000 python app.py                    # custom port
 ```
 
 No build step — frontend is plain HTML/CSS/JS served directly from `static/`.
+
+`config.py` loads `.env` (stdlib, no deps) on import of `app.py`/`pipeline.py`, so the
+RMR gateway env vars work for both the web server and cron. Real environment variables
+take precedence over `.env`. Without them the pipeline runs rules-only (no AI). `.env`
+is gitignored — never commit the key.
 
 ## Architecture
 

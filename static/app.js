@@ -235,7 +235,7 @@ function renderTenders() {
       const price = Number(tender.price || 0) > 0 ? fmtRub.format(tender.price) : 'Цена не распознана';
       const deadline = tender.deadline || 'без срока';
       return `
-        <article class="tender-card${active}${viewed}${fresh ? ' fresh' : ''}" data-number="${escapeHtml(tender.number)}">
+        <article class="tender-card${active}${viewed}${fresh ? ' fresh' : ''}" data-number="${escapeHtml(tender.number)}" role="button" tabindex="0" aria-label="Открыть анализ тендера ${escapeHtml(tender.title)}">
           <div>
             <div class="score ${priorityClass(analysis.score)}">${analysis.score}</div>
           </div>
@@ -319,6 +319,47 @@ function renderDetail(tender) {
   `;
 }
 
+let drawerTrigger = null;
+
+function isDrawerOpen() {
+  return byId('detailDrawer').classList.contains('open');
+}
+
+function openDrawer(tender) {
+  if (!tender) return;
+  renderDetail(tender);
+  const drawer = byId('detailDrawer');
+  const backdrop = byId('drawerBackdrop');
+  drawerTrigger = document.querySelector(`.tender-card[data-number="${CSS.escape(tender.number)}"]`);
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  backdrop.classList.add('open');
+  document.body.classList.add('drawer-open');
+  byId('drawerClose').focus();
+}
+
+function closeDrawer() {
+  const drawer = byId('detailDrawer');
+  if (!drawer.classList.contains('open')) return;
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+  byId('drawerBackdrop').classList.remove('open');
+  document.body.classList.remove('drawer-open');
+  if (drawerTrigger && document.contains(drawerTrigger)) {
+    drawerTrigger.focus();
+  }
+  drawerTrigger = null;
+}
+
+function selectTender(number) {
+  if (!number) return;
+  state.selectedNumber = number;
+  markViewed(number);
+  const tender = state.tenders.find((item) => item.number === number);
+  renderTenders();
+  openDrawer(tender);
+}
+
 async function loadTenders() {
   byId('tenderList').innerHTML = '<div class="loading">Загружается список тендеров и проставляются теги...</div>';
   byId('resultNote').textContent = 'Загрузка';
@@ -328,16 +369,18 @@ async function loadTenders() {
   state.sourceUrl = payload.source_url;
   state.selectedTags = new Set([...state.selectedTags].filter((tag) => allAvailableTags().includes(tag)));
   state.currentPage = 1;
-  state.selectedNumber = state.tenders[0]?.number || null;
-  markViewed(state.selectedNumber);
+  state.selectedNumber = null;
   updateMetrics(payload);
   renderTagFilters();
   renderTenders();
-  renderDetail(state.tenders[0]);
 }
 
 async function uploadFile(event) {
   event.preventDefault();
+  if (!state.selectedNumber) {
+    byId('uploadResult').textContent = 'Сначала выберите тендер в списке — файл прикрепится к его карточке.';
+    return;
+  }
   const file = byId('fileInput').files[0];
   if (!file) {
     byId('uploadResult').textContent = 'Выберите файл документации.';
@@ -405,13 +448,13 @@ document.addEventListener('click', (event) => {
     renderTenders();
     return;
   }
+  if (event.target.closest('#drawerClose') || event.target.closest('#drawerBackdrop')) {
+    closeDrawer();
+    return;
+  }
   const card = event.target.closest('.tender-card');
   if (card && !event.target.closest('a')) {
-    state.selectedNumber = card.dataset.number;
-    markViewed(state.selectedNumber);
-    const tender = state.tenders.find((item) => item.number === state.selectedNumber);
-    renderTenders();
-    renderDetail(tender);
+    selectTender(card.dataset.number);
   }
   const downloadOne = event.target.closest('.download-document');
   if (downloadOne) {
@@ -427,6 +470,20 @@ document.addEventListener('click', (event) => {
   if (pageButton && pageButton.closest('#pagination')) {
     state.currentPage = Number(pageButton.dataset.page || pageButton.dataset.pageNumber);
     renderTenders();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isDrawerOpen()) {
+    closeDrawer();
+    return;
+  }
+  if (event.key === 'Enter' || event.key === ' ') {
+    const card = event.target.closest?.('.tender-card');
+    if (card) {
+      event.preventDefault();
+      selectTender(card.dataset.number);
+    }
   }
 });
 

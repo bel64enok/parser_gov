@@ -31,16 +31,6 @@
             Система загружает закупки из ЕИС, проставляет теги доменов Beeline, проверяет базовые критерии анализа и ранжирует карточки по потенциалу.
           </p>
         </div>
-        <section class="search-panel tag-panel">
-          <div class="panel-head">
-            <div>
-              <h2>Отбор по тегам</h2>
-              <p>Теги автоматически проставляются на карточках тендеров. Выберите один или несколько тегов, чтобы сузить список.</p>
-            </div>
-            <button type="button" id="resetTags">Все</button>
-          </div>
-          <div id="tagFilters" class="tag-filter-list"></div>
-        </section>
       </section>
 
       <section class="metrics" id="queue">
@@ -75,33 +65,42 @@
             </div>
             <a id="sourceUrl" href="#" target="_blank" rel="noreferrer">Открыть источник ЕИС</a>
           </div>
+          <div class="filter-bar">
+            <span class="filter-bar__label">Фильтр по тегам</span>
+            <div id="tagFilters" class="tag-filter-list"></div>
+            <button type="button" id="resetTags">Все</button>
+          </div>
           <div id="tenderList" class="tender-list"></div>
           <div id="pagination" class="pagination"></div>
         </section>
       </section>
 
-      <section class="details-grid">
-        <section class="detail-panel" id="detailPanel">
-          <div class="section-head">
-            <div>
-              <h2>Карточка анализа</h2>
-              <p>Выберите закупку из списка.</p>
-            </div>
-          </div>
-          <div id="detailBody" class="empty">Нет выбранной закупки</div>
-        </section>
-
-        <section class="upload" id="upload">
-          <h2>Загрузка документации</h2>
-          <p>Файл будет прикреплен к выбранной карточке тендера. Поддержка прототипа: zip, docx, xlsx, pdf с текстовым слоем, txt/csv.</p>
-          <form id="uploadForm">
-            <input type="file" id="fileInput" name="file" />
-            <button type="submit">Проанализировать</button>
-          </form>
-          <div id="uploadResult" class="upload-result">Файл не выбран</div>
-        </section>
+      <section class="upload" id="upload">
+        <h2>Загрузка документации</h2>
+        <p>Файл будет прикреплен к выбранной карточке тендера. Поддержка прототипа: zip, docx, xlsx, pdf с текстовым слоем, txt/csv.</p>
+        <form id="uploadForm">
+          <input type="file" id="fileInput" name="file" />
+          <button type="submit">Проанализировать</button>
+        </form>
+        <div id="uploadResult" class="upload-result">Файл не выбран</div>
       </section>
     </main>
+
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <aside
+      class="detail-drawer"
+      id="detailDrawer"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="drawerTitle"
+      aria-hidden="true"
+    >
+      <div class="detail-drawer__head">
+        <h2 id="drawerTitle">Карточка анализа</h2>
+        <button type="button" class="drawer-close" id="drawerClose" aria-label="Закрыть карточку анализа">×</button>
+      </div>
+      <div id="detailBody" class="detail-drawer__body"></div>
+    </aside>
 
     <script src="/app.js"></script>
   </body>

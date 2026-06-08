@@ -361,18 +361,55 @@ function selectTender(number) {
 }
 
 async function loadTenders() {
+  const syncBtn = byId('syncBtn');
+  const syncLabel = syncBtn?.querySelector('.sync-label');
+
+  if (syncBtn) {
+    syncBtn.disabled = true;
+    syncBtn.classList.remove('error');
+    syncBtn.classList.add('loading');
+    syncBtn.setAttribute('aria-busy', 'true');
+  }
+  if (syncLabel) syncLabel.textContent = 'Загрузка...';
+
   byId('tenderList').innerHTML = '<div class="loading">Загружается список тендеров и проставляются теги...</div>';
   byId('resultNote').textContent = 'Загрузка';
-  const response = await fetch('/api/tenders?limit=50');
-  const payload = await response.json();
-  state.tenders = payload.items || [];
-  state.sourceUrl = payload.source_url;
-  state.selectedTags = new Set([...state.selectedTags].filter((tag) => allAvailableTags().includes(tag)));
-  state.currentPage = 1;
-  state.selectedNumber = null;
-  updateMetrics(payload);
-  renderTagFilters();
-  renderTenders();
+
+  try {
+    const response = await fetch('/api/tenders?limit=50');
+    const payload = await response.json();
+    state.tenders = payload.items || [];
+    state.sourceUrl = payload.source_url;
+    state.selectedTags = new Set([...state.selectedTags].filter((tag) => allAvailableTags().includes(tag)));
+    state.currentPage = 1;
+    state.selectedNumber = null;
+    updateMetrics(payload);
+    renderTagFilters();
+    renderTenders();
+
+    if (syncLabel) {
+      const now = new Date();
+      const hhmm = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      syncLabel.textContent = `Обновлено в ${hhmm}`;
+      setTimeout(() => { syncLabel.textContent = 'Обновить'; }, 5000);
+    }
+  } catch {
+    if (syncBtn) syncBtn.classList.add('error');
+    if (syncLabel) {
+      syncLabel.textContent = 'Ошибка';
+      setTimeout(() => {
+        syncBtn?.classList.remove('error');
+        syncLabel.textContent = 'Обновить';
+      }, 3000);
+    }
+    byId('tenderList').innerHTML = '<div class="loading">Не удалось загрузить тендеры. Нажмите «Обновить» для повторной попытки.</div>';
+  } finally {
+    if (syncBtn) {
+      syncBtn.disabled = false;
+      syncBtn.classList.remove('loading');
+      syncBtn.removeAttribute('aria-busy');
+    }
+  }
 }
 
 async function uploadFile(event) {

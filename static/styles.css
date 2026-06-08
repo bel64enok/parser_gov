@@ -151,6 +151,12 @@ a {
   pointer-events: none;
 }
 
+.sync-btn.demo {
+  background: #f0f0f0;
+  border-color: #aaa;
+  color: #555;
+}
+
 .sync-btn.error {
   background: #ffe5e7;
   border-color: var(--risk);

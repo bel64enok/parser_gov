@@ -27,17 +27,6 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-function updateMetrics(payload) {
-  const tenders = state.tenders;
-  byId('queueCount').textContent = tenders.length;
-  byId('hotCount').textContent = tenders.filter((item) => item.analysis.score >= 75).length;
-  byId('viewedCount').textContent = state.viewed.size;
-  byId('sourceLabel').textContent = payload.source === 'zakupki.gov.ru' ? 'ЕИС' : 'Demo';
-  const parsedAt = payload.parsed_at ? `Парсинг: ${payload.parsed_at}` : 'Парсинг выполнен';
-  const liveCount = Number.isFinite(payload.live_count) ? `, ЕИС: ${payload.live_count}` : '';
-  byId('sourceHint').textContent = payload.error ? `${parsedAt}${liveCount}. ${payload.error}` : `${parsedAt}${liveCount}`;
-  byId('sourceUrl').href = payload.source_url || '#';
-}
 
 function priorityClass(score) {
   if (score >= 75) return 'high';
@@ -129,7 +118,6 @@ function markViewed(number) {
   if (!number) return;
   state.viewed.add(number);
   localStorage.setItem('viewedTenderCards', JSON.stringify([...state.viewed]));
-  byId('viewedCount').textContent = state.viewed.size;
 }
 
 function termsFromDocument(document) {
@@ -402,17 +390,6 @@ function selectTender(number) {
 }
 
 async function loadTenders() {
-  const syncBtn = byId('syncBtn');
-  const syncLabel = syncBtn?.querySelector('.sync-label');
-
-  if (syncBtn) {
-    syncBtn.disabled = true;
-    syncBtn.classList.remove('error');
-    syncBtn.classList.add('loading');
-    syncBtn.setAttribute('aria-busy', 'true');
-  }
-  if (syncLabel) syncLabel.textContent = 'Загрузка...';
-
   byId('tenderList').innerHTML = '<div class="loading">Загружается список тендеров и проставляются теги...</div>';
   byId('resultNote').textContent = 'Загрузка';
 
@@ -428,33 +405,59 @@ async function loadTenders() {
     state.selectedTags = new Set([...state.selectedTags].filter((tag) => allAvailableTags().includes(tag)));
     state.currentPage = 1;
     state.selectedNumber = null;
-    updateMetrics(payload);
+    byId('sourceUrl').href = payload.source_url || '#';
     renderTagFilters();
     renderTenders();
+  } catch {
+    byId('tenderList').innerHTML = '<div class="loading">Не удалось загрузить тендеры. Обновите страницу для повторной попытки.</div>';
+  }
+}
 
-    if (syncBtn && syncLabel) {
-      const isReal = payload.source === 'zakupki.gov.ru';
-      const parsedDate = payload.parsed_at ? new Date(payload.parsed_at) : new Date();
-      const hhmm = parsedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-      syncLabel.textContent = `${isReal ? 'ЕИС' : 'Демо'} · ${hhmm}`;
-      syncBtn.classList.toggle('demo', !isReal);
+function fmtTs(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function setDot(id, status) {
+  const el = byId(id);
+  if (el) el.className = 'stage-dot dot-' + status;
+}
+
+async function loadPipelineStatus() {
+  try {
+    const d = await fetch('/api/pipeline', { cache: 'no-store' }).then((r) => r.json());
+
+    byId('countTotal').textContent = d.total;
+    byId('docsTotal').textContent = d.docs_total ? `${d.docs_total} документов` : '';
+    byId('sourceCollect').textContent = d.source === 'zakupki.gov.ru' ? 'zakupki.gov.ru' : 'demo-данные';
+    byId('tsCollect').textContent = fmtTs(d.last_fetched_at);
+    setDot('dotCollect', d.total > 0 ? 'ok' : 'idle');
+
+    byId('countAnalyzed').textContent = d.analyzed;
+    byId('countPending').textContent = d.pending > 0 ? `${d.pending} ожидают` : '';
+    byId('sourceAi').textContent = d.ai_enabled ? 'правила + ИИ' : 'правила';
+    byId('tsAnalyze').textContent = fmtTs(d.last_analyzed_at);
+    setDot('dotAnalyze', d.pending > 0 ? 'warn' : d.analyzed > 0 ? 'ok' : 'idle');
+
+    byId('countReady').textContent = d.analyzed;
+    byId('countError').textContent = d.error > 0 ? `${d.error} ошибок` : '';
+    byId('tsReady').textContent = fmtTs(d.last_analyzed_at);
+    setDot('dotReady', d.error > 0 ? 'err' : d.analyzed > 0 ? 'ok' : 'idle');
+
+    const errBlock = byId('pipelineErrors');
+    const errList = byId('pipelineErrorList');
+    if (d.errors?.length) {
+      errList.innerHTML = d.errors
+        .map((e) => `<li><code>${escapeHtml(e.number)}</code> — ${escapeHtml(e.error)}</li>`)
+        .join('');
+      errBlock.hidden = false;
+    } else {
+      errBlock.hidden = true;
     }
   } catch {
-    if (syncBtn) syncBtn.classList.add('error');
-    if (syncLabel) {
-      syncLabel.textContent = 'Ошибка';
-      setTimeout(() => {
-        syncBtn?.classList.remove('error');
-        syncLabel.textContent = 'Обновить';
-      }, 3000);
-    }
-    byId('tenderList').innerHTML = '<div class="loading">Не удалось загрузить тендеры. Нажмите «Обновить» для повторной попытки.</div>';
-  } finally {
-    if (syncBtn) {
-      syncBtn.disabled = false;
-      syncBtn.classList.remove('loading');
-      syncBtn.removeAttribute('aria-busy');
-    }
+    // non-critical — tender list still loads
   }
 }
 
@@ -546,8 +549,6 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-byId('syncBtn')?.addEventListener('click', () => loadTenders());
-
 function downloadText(filename, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -576,3 +577,5 @@ function downloadAllDocuments(tender) {
 }
 
 loadTenders();
+loadPipelineStatus();
+setInterval(loadPipelineStatus, 30_000);

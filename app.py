@@ -125,6 +125,9 @@ class TenderHandler(BaseHTTPRequestHandler):
             }
             self.send_json(db.query_tenders(filters))
             return
+        if parsed.path == "/api/pipeline":
+            self.send_json(db.pipeline_status())
+            return
         self.serve_static(parsed.path)
 
     def do_POST(self) -> None:

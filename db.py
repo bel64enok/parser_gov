@@ -294,3 +294,46 @@ def query_tenders(filters: dict[str, Any]) -> dict[str, Any]:
         }
     finally:
         conn.close()
+
+
+def pipeline_status() -> dict[str, Any]:
+    """ETL state summary for /api/pipeline."""
+    conn = connect()
+    try:
+        counts = conn.execute(
+            """
+            SELECT
+                COUNT(*)                                  AS total,
+                SUM(pipeline_status = 'fetched')          AS pending,
+                SUM(pipeline_status = 'analyzed')         AS analyzed,
+                SUM(pipeline_status = 'error')            AS error,
+                MAX(fetched_at)                           AS last_fetched_at
+            FROM tenders
+            """
+        ).fetchone()
+        last_analyzed = conn.execute(
+            "SELECT MAX(analyzed_at) AS ts FROM analysis"
+        ).fetchone()["ts"]
+        docs_total = conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
+        has_real = conn.execute(
+            "SELECT 1 FROM tenders WHERE source='zakupki.gov.ru' LIMIT 1"
+        ).fetchone()
+        error_rows = conn.execute(
+            "SELECT number, error FROM tenders "
+            "WHERE pipeline_status='error' ORDER BY fetched_at DESC LIMIT 3"
+        ).fetchall()
+        import ai as ai_module  # lazy — keeps db.py testable without openai package
+        return {
+            "total":            counts["total"] or 0,
+            "pending":          counts["pending"] or 0,
+            "analyzed":         counts["analyzed"] or 0,
+            "error":            counts["error"] or 0,
+            "last_fetched_at":  counts["last_fetched_at"] or "",
+            "last_analyzed_at": last_analyzed or "",
+            "source":           "zakupki.gov.ru" if has_real else "fallback",
+            "ai_enabled":       ai_module.is_configured(),
+            "docs_total":       docs_total or 0,
+            "errors":           [{"number": r["number"], "error": r["error"]} for r in error_rows],
+        }
+    finally:
+        conn.close()

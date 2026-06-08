@@ -18,6 +18,9 @@ const fmtRub = new Intl.NumberFormat('ru-RU', {
 
 const byId = (id) => document.getElementById(id);
 
+const DOC_RENDER_CAP = 45_000; // макс. символов подсветки в <pre> за раз
+const MAX_HL_TERMS = 60; // верхний предел числа терминов в одном regex
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -125,13 +128,18 @@ function termsFromDocument(document) {
 }
 
 function highlightText(text, terms) {
-  let result = escapeHtml(text || 'Текст документа не распознан');
-  terms.forEach((term) => {
-    const escaped = escapeHtml(term);
-    const pattern = new RegExp(`(${escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    result = result.replace(pattern, '<mark>$1</mark>');
-  });
-  return result;
+  const source = text || 'Текст документа не распознан';
+  // Один проход вместо N: объединяем термины в одну альтернацию.
+  const cleaned = [...new Set((terms || []).filter(Boolean))]
+    .sort((a, b) => b.length - a.length) // длинные раньше — не съедаются короткими
+    .slice(0, MAX_HL_TERMS)
+    .map((t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .filter(Boolean);
+  const escaped = escapeHtml(source);
+  if (!cleaned.length) return escaped;
+  // Подсветка идёт по уже экранированному тексту, поэтому термины тоже экранируем.
+  const pattern = new RegExp(`(${cleaned.map((t) => escapeHtml(t)).join('|')})`, 'gi');
+  return escaped.replace(pattern, '<mark>$1</mark>');
 }
 
 function renderEvidence(highlights) {
@@ -168,12 +176,14 @@ function renderDocuments(documents) {
       ${documents
         .map((document) => {
           const terms = termsFromDocument(document);
+          const fullLen = (document.text || '').length;
+          const sizeHint = fullLen ? `${fullLen.toLocaleString('ru-RU')} символов` : 'текст не распознан';
           return `
-            <details class="document-card" open>
+            <details class="document-card" data-doc-id="${escapeHtml(document.id)}">
               <summary>
                 <span>
                   ${escapeHtml(document.name)}
-                  <small>${escapeHtml(document.type)} • ${terms.length} выделений</small>
+                  <small>${escapeHtml(document.type)} • ${terms.length} выделений • ${sizeHint}</small>
                 </span>
               </summary>
               <div class="document-actions">
@@ -181,7 +191,7 @@ function renderDocuments(documents) {
                 <button class="download-document" type="button" data-doc-id="${escapeHtml(document.id)}">Выгрузить текст</button>
               </div>
               ${renderEvidence(document.highlights || [])}
-              <pre class="document-text">${highlightText(document.text, terms)}</pre>
+              <pre class="document-text" data-doc-body="${escapeHtml(document.id)}" data-rendered="0"><span class="document-text__placeholder">Разверните документ, чтобы показать текст…</span></pre>
             </details>
           `;
         })
@@ -413,54 +423,6 @@ async function loadTenders() {
   }
 }
 
-function fmtTs(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-
-function setDot(id, status) {
-  const el = byId(id);
-  if (el) el.className = 'stage-dot dot-' + status;
-}
-
-async function loadPipelineStatus() {
-  try {
-    const d = await fetch('/api/pipeline', { cache: 'no-store' }).then((r) => r.json());
-
-    byId('countTotal').textContent = d.total;
-    byId('docsTotal').textContent = d.docs_total ? `${d.docs_total} документов` : '';
-    byId('sourceCollect').textContent = d.source === 'zakupki.gov.ru' ? 'zakupki.gov.ru' : 'demo-данные';
-    byId('tsCollect').textContent = fmtTs(d.last_fetched_at);
-    setDot('dotCollect', d.total > 0 ? 'ok' : 'idle');
-
-    byId('countAnalyzed').textContent = d.analyzed;
-    byId('countPending').textContent = d.pending > 0 ? `${d.pending} ожидают` : '';
-    byId('sourceAi').textContent = d.ai_enabled ? 'правила + ИИ' : 'правила';
-    byId('tsAnalyze').textContent = fmtTs(d.last_analyzed_at);
-    setDot('dotAnalyze', d.pending > 0 ? 'warn' : d.analyzed > 0 ? 'ok' : 'idle');
-
-    byId('countReady').textContent = d.analyzed;
-    byId('countError').textContent = d.error > 0 ? `${d.error} ошибок` : '';
-    byId('tsReady').textContent = fmtTs(d.last_analyzed_at);
-    setDot('dotReady', d.error > 0 ? 'err' : d.analyzed > 0 ? 'ok' : 'idle');
-
-    const errBlock = byId('pipelineErrors');
-    const errList = byId('pipelineErrorList');
-    if (d.errors?.length) {
-      errList.innerHTML = d.errors
-        .map((e) => `<li><code>${escapeHtml(e.number)}</code> — ${escapeHtml(e.error)}</li>`)
-        .join('');
-      errBlock.hidden = false;
-    } else {
-      errBlock.hidden = true;
-    }
-  } catch {
-    // non-critical — tender list still loads
-  }
-}
-
 document.addEventListener('submit', (event) => {
   if (event.target.id === 'manualTagForm') {
     event.preventDefault();
@@ -549,6 +511,32 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+// Ленивая отрисовка текста документа: подсвечиваем и вставляем текст только
+// когда <details> реально раскрыли. toggle не всплывает — слушаем в фазе capture.
+document.addEventListener(
+  'toggle',
+  (event) => {
+    const details = event.target;
+    if (!(details instanceof HTMLElement) || !details.classList.contains('document-card')) return;
+    if (!details.open) return;
+    const pre = details.querySelector('.document-text[data-doc-body]');
+    if (!pre || pre.dataset.rendered === '1') return;
+
+    const tender = state.tenders.find((item) => item.number === state.selectedNumber);
+    const doc = tender?.documents?.find((item) => item.id === details.dataset.docId);
+    if (!doc) return;
+
+    const full = doc.text || '';
+    const capped = full.length > DOC_RENDER_CAP;
+    const note = capped
+      ? `<div class="document-text__note">Показаны первые ${DOC_RENDER_CAP.toLocaleString('ru-RU')} символов из ${full.length.toLocaleString('ru-RU')}. Полный текст — кнопка «Выгрузить текст».</div>`
+      : '';
+    pre.innerHTML = note + highlightText(capped ? full.slice(0, DOC_RENDER_CAP) : full, termsFromDocument(doc));
+    pre.dataset.rendered = '1';
+  },
+  true, // capture — toggle не всплывает
+);
+
 function downloadText(filename, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -577,5 +565,3 @@ function downloadAllDocuments(tender) {
 }
 
 loadTenders();
-loadPipelineStatus();
-setInterval(loadPipelineStatus, 30_000);

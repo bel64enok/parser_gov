@@ -16,6 +16,8 @@ DATA_DIR = ROOT / "data"
 TENDERS_DIR = DATA_DIR / "tenders"
 DB_PATH = DATA_DIR / "tenders.db"
 
+STALE_RUN_MIN = 15  # running дольше 15 мин при часовом cron → 'stalled' (прервано)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenders (
     number          TEXT PRIMARY KEY,
@@ -72,8 +74,27 @@ CREATE TABLE IF NOT EXISTS analysis (
     analyzed_at         TEXT
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      TEXT,
+    finished_at     TEXT,
+    duration_sec    REAL,
+    query           TEXT,
+    limit_n         INTEGER,
+    source          TEXT,
+    fetched_new     INTEGER,
+    fetched_skipped INTEGER,
+    analyzed_ok     INTEGER,
+    analyzed_failed INTEGER,
+    status          TEXT,            -- running | completed | error
+    error           TEXT,
+    ai_enabled      INTEGER,
+    ai_model        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenders_status ON tenders(pipeline_status);
 CREATE INDEX IF NOT EXISTS idx_tenders_publish ON tenders(publish_date_iso);
+CREATE INDEX IF NOT EXISTS idx_runs_started ON pipeline_runs(started_at);
 """
 
 
@@ -335,5 +356,102 @@ def pipeline_status() -> dict[str, Any]:
             "docs_total":       docs_total or 0,
             "errors":           [{"number": r["number"], "error": r["error"]} for r in error_rows],
         }
+    finally:
+        conn.close()
+
+
+def start_run(query: str, limit: int) -> int:
+    """Открывает запись прогона (status='running'). Возвращает id для finish_run."""
+    import ai as ai_module  # lazy — db.py не должен тянуть openai
+    configured = ai_module.is_configured()
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO pipeline_runs "
+            "(started_at, query, limit_n, status, ai_enabled, ai_model) "
+            "VALUES (?, ?, ?, 'running', ?, ?)",
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                query,
+                int(limit),
+                int(configured),
+                ai_module.MODEL if configured else "rules-only",
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def finish_run(
+    run_id: int,
+    fetch_summary: dict[str, Any] | None,
+    analyze_summary: dict[str, Any] | None,
+    source: str,
+    status: str,
+    error: str = "",
+) -> None:
+    """Закрывает запись прогона: время, длительность, счётчики, статус."""
+    if not run_id:
+        return
+    fetch_summary = fetch_summary or {}
+    analyze_summary = analyze_summary or {}
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT started_at FROM pipeline_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        finished = datetime.now()
+        duration = None
+        if row and row["started_at"]:
+            try:
+                duration = (finished - datetime.fromisoformat(row["started_at"])).total_seconds()
+            except ValueError:
+                duration = None
+        conn.execute(
+            "UPDATE pipeline_runs SET "
+            "finished_at=?, duration_sec=?, source=?, "
+            "fetched_new=?, fetched_skipped=?, analyzed_ok=?, analyzed_failed=?, "
+            "status=?, error=? WHERE id=?",
+            (
+                finished.isoformat(timespec="seconds"),
+                duration,
+                source,
+                fetch_summary.get("new"),
+                fetch_summary.get("skipped"),
+                analyze_summary.get("analyzed"),
+                analyze_summary.get("failed"),
+                status,
+                error,
+                run_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recent_runs(limit: int = 50) -> list[dict[str, Any]]:
+    """История прогонов, новые сверху. 'running' старше STALE_RUN_MIN → 'stalled'."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM pipeline_runs ORDER BY id DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        now = datetime.now()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            if d.get("status") == "running" and d.get("started_at"):
+                try:
+                    age_min = (now - datetime.fromisoformat(d["started_at"])).total_seconds() / 60
+                    if age_min > STALE_RUN_MIN:
+                        d["status"] = "stalled"
+                except ValueError:
+                    pass
+            out.append(d)
+        return out
     finally:
         conn.close()

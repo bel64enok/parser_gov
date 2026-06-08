@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tender Radar — Мониторинг ETL</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="beeline-logo" aria-label="Beeline"><span></span></div>
+        <div>
+          <strong>beeline Tender Radar</strong>
+          <span>Мониторинг ETL-пайплайна</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/admin.html" aria-current="page">Мониторинг</a>
+        <a href="/">Тендеры</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="admin-current" id="adminCurrent" aria-label="Текущее состояние пайплайна">
+        <div class="admin-current__line">
+          <span class="stage-dot" id="curDot"></span>
+          <strong id="curState">Загрузка…</strong>
+          <span class="admin-current__meta" id="curMeta"></span>
+        </div>
+        <p class="admin-current__note" id="curNote"></p>
+      </section>
+
+      <section class="admin-section" aria-label="История прогонов">
+        <div class="admin-section__head">
+          <h2>История прогонов</h2>
+          <span class="muted-text" id="runsCount"></span>
+        </div>
+        <div class="admin-table-wrap">
+          <table class="admin-table" id="runsTable">
+            <thead>
+              <tr>
+                <th>Старт</th>
+                <th>Длит.</th>
+                <th>Запрос</th>
+                <th>Лимит</th>
+                <th>Источник</th>
+                <th>Скачано</th>
+                <th>Анализ</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody id="runsBody">
+              <tr><td colspan="8" class="admin-empty">Загрузка…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="admin-section" aria-label="Очередь обработки">
+        <div class="admin-section__head">
+          <h2>В обработке</h2>
+          <span class="muted-text" id="queueCount"></span>
+        </div>
+        <div class="admin-queue" id="queuePending"></div>
+        <div class="admin-queue admin-queue--error" id="queueError"></div>
+      </section>
+
+      <section class="admin-section" aria-label="Конфигурация ИИ-обработки">
+        <h2>Конфигурация ИИ-обработки</h2>
+        <dl class="admin-config" id="aiConfig"></dl>
+        <div class="admin-prompt">
+          <div class="admin-prompt__label">Системный промпт</div>
+          <pre class="admin-prompt__body" id="aiPrompt">—</pre>
+        </div>
+      </section>
+    </main>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>

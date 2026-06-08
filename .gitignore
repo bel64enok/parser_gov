@@ -5,6 +5,7 @@ __pycache__/
 venv/
 env/
 uploads/
+data/
 *.docx
 *.pdf
 *.xlsx

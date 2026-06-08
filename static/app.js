@@ -7,6 +7,7 @@ const state = {
   manualTags: JSON.parse(localStorage.getItem('manualTenderTagsV2') || '{}'),
   currentPage: 1,
   pageSize: 6,
+  filters: { dateFrom: '', dateTo: '', query: '' },
 };
 
 const fmtRub = new Intl.NumberFormat('ru-RU', {
@@ -279,6 +280,33 @@ function renderTenders() {
   renderPagination(items.length);
 }
 
+function renderAiBlock(analysis) {
+  const summary = analysis.summary || '';
+  const requirements = analysis.requirements || [];
+  const risks = analysis.risks || [];
+  const hasAi = summary || requirements.length || risks.length || analysis.deadline_note;
+  if (!hasAi) {
+    return '<section class="ai-section"><h3>Анализ ИИ</h3><p class="muted-text">ИИ-обработка не выполнялась (шлюз не настроен) — показан анализ на правилах.</p></section>';
+  }
+  const domainLine = analysis.suggested_domain
+    ? `<span class="tag">ИИ-домен: ${escapeHtml(analysis.suggested_domain)}${analysis.confidence ? ` (${escapeHtml(analysis.confidence)})` : ''}</span>`
+    : '';
+  const list = (title, items) =>
+    items.length
+      ? `<div class="ai-list"><strong>${title}</strong><ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`
+      : '';
+  return `
+    <section class="ai-section">
+      <h3>Анализ ИИ</h3>
+      ${domainLine ? `<div class="tag-row">${domainLine}</div>` : ''}
+      ${summary ? `<p class="ai-summary">${escapeHtml(summary)}</p>` : ''}
+      ${list('Ключевые требования', requirements)}
+      ${list('Риски и нюансы', risks)}
+      ${analysis.deadline_note ? `<p class="ai-note"><strong>Сроки:</strong> ${escapeHtml(analysis.deadline_note)}</p>` : ''}
+    </section>
+  `;
+}
+
 function renderDetail(tender) {
   if (!tender) {
     byId('detailBody').innerHTML = '<div class="empty">Нет выбранной закупки</div>';
@@ -321,6 +349,7 @@ function renderDetail(tender) {
         )
         .join('')}
     </div>
+    ${renderAiBlock(analysis)}
     <section class="document-section">
       <h3>Документы и доказательства</h3>
       <p>Подсвечены фрагменты, которые подтверждают домен, способ закупки и критерии анализа.</p>
@@ -388,8 +417,11 @@ async function loadTenders() {
   byId('resultNote').textContent = 'Загрузка';
 
   try {
-    const refreshToken = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const response = await fetch(`/api/tenders?limit=50&refresh=${encodeURIComponent(refreshToken)}`, { cache: 'no-store' });
+    const params = new URLSearchParams({ limit: '50' });
+    if (state.filters.dateFrom) params.set('date_from', state.filters.dateFrom);
+    if (state.filters.dateTo) params.set('date_to', state.filters.dateTo);
+    if (state.filters.query) params.set('query', state.filters.query);
+    const response = await fetch(`/api/tenders?${params.toString()}`, { cache: 'no-store' });
     const payload = await response.json();
     state.tenders = payload.items || [];
     state.sourceUrl = payload.source_url;
@@ -460,6 +492,21 @@ document.addEventListener('click', (event) => {
     renderTenders();
     return;
   }
+  if (event.target.closest('#applyFilters')) {
+    state.filters.dateFrom = byId('dateFrom')?.value || '';
+    state.filters.dateTo = byId('dateTo')?.value || '';
+    state.filters.query = byId('queryInput')?.value.trim() || '';
+    loadTenders();
+    return;
+  }
+  if (event.target.closest('#resetFilters')) {
+    state.filters = { dateFrom: '', dateTo: '', query: '' };
+    if (byId('dateFrom')) byId('dateFrom').value = '';
+    if (byId('dateTo')) byId('dateTo').value = '';
+    if (byId('queryInput')) byId('queryInput').value = '';
+    loadTenders();
+    return;
+  }
   if (event.target.closest('#drawerClose') || event.target.closest('#drawerBackdrop')) {
     closeDrawer();
     return;
@@ -498,6 +545,8 @@ document.addEventListener('keydown', (event) => {
     }
   }
 });
+
+byId('syncBtn')?.addEventListener('click', () => loadTenders());
 
 function downloadText(filename, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });

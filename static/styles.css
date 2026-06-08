@@ -321,49 +321,7 @@ button:hover {
   background: var(--yellow-dark);
 }
 
-/* ── ETL Admin Pipeline ───────────────────────────────── */
-
-.admin-pipeline {
-  margin: 18px 0 24px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--white);
-}
-
-.pipeline-stages {
-  display: flex;
-  align-items: stretch;
-}
-
-.pipeline-stage {
-  flex: 1 1 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 14px;
-  border-right: 1px solid var(--line);
-}
-
-.pipeline-stage:last-of-type {
-  border-right: none;
-}
-
-.pipeline-arrow {
-  display: flex;
-  align-items: center;
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 18px;
-  user-select: none;
-  flex-shrink: 0;
-}
-
-.stage-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
+/* ── Status dots (shared: admin run badges) ───────────── */
 
 .stage-dot {
   display: inline-block;
@@ -379,81 +337,226 @@ button:hover {
 .dot-err  { background: var(--risk); }
 .dot-idle { background: var(--muted); }
 
-.stage-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--black);
+/* ── Admin / Monitoring page ──────────────────────────── */
+
+.admin-current {
+  margin: 18px 0 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
 }
 
-.stage-source {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 400;
-}
-
-.stage-body {
+.admin-current__line {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
-.stage-count {
-  font-size: 22px;
-  font-weight: 800;
+.admin-current__line strong {
   color: var(--black);
-  line-height: 1;
+  font-size: 15px;
 }
 
-.stage-label {
-  font-size: 12px;
+.admin-current__meta {
   color: var(--muted);
+  font-size: 13px;
 }
 
-.stage-docs,
-.stage-pending,
-.stage-error {
-  font-size: 11px;
+.admin-current__note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-section {
+  margin: 24px 0;
+}
+
+.admin-section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--soft);
+  color: var(--muted);
   font-weight: 700;
-  margin-left: auto;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
 }
 
-.stage-docs    { color: var(--muted); }
-.stage-pending { color: var(--warn); }
-.stage-error   { color: var(--risk); }
+.admin-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  vertical-align: top;
+}
 
-.stage-ts {
+.admin-table tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-table tbody tr:hover td {
+  background: #fafaf7;
+}
+
+.admin-table__query {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-sub {
+  color: var(--muted);
   font-size: 11px;
-  color: var(--muted);
-  display: block;
 }
 
-.pipeline-errors {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
-
-.pipeline-errors__title {
-  font-size: 12px;
-  color: var(--muted);
-  font-weight: 700;
-}
-
-.pipeline-error-list {
-  margin: 6px 0 0;
-  padding-left: 16px;
-  font-size: 12px;
+.admin-sub--err {
   color: var(--risk);
 }
 
-.pipeline-error-list code {
+.admin-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.admin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--black);
+  white-space: nowrap;
+}
+
+.admin-badge--pulse .stage-dot {
+  animation: admin-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes admin-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-badge--pulse .stage-dot { animation: none; }
+}
+
+.admin-queue {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-queue--error {
+  margin-top: 12px;
+}
+
+.admin-queue__title {
+  color: var(--risk);
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.admin-queue__item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--white);
+  font-size: 13px;
+}
+
+.admin-queue__item code {
   font-family: monospace;
-  font-size: 11px;
-  background: #fff0f0;
-  padding: 1px 4px;
-  border-radius: 3px;
+  font-size: 12px;
+  color: var(--black);
+  white-space: nowrap;
+}
+
+.admin-queue__item span {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-config {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 18px;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+  font-size: 13px;
+}
+
+.admin-config dt {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.admin-config dd {
+  margin: 0;
+  color: var(--black);
+}
+
+.admin-prompt {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+  overflow: hidden;
+}
+
+.admin-prompt__label {
+  padding: 10px 14px;
+  background: var(--soft);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.admin-prompt__body {
+  margin: 0;
+  padding: 14px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
 }
 
 .workspace {
@@ -949,6 +1052,19 @@ h2 {
   line-height: 1.55;
 }
 
+.document-text__placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.document-text__note {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 mark {
   padding: 1px 3px;
   border-radius: 4px;
@@ -1026,23 +1142,6 @@ mark {
 
   .amount {
     text-align: left;
-  }
-
-  .pipeline-stages {
-    flex-direction: column;
-  }
-
-  .pipeline-arrow {
-    display: none;
-  }
-
-  .pipeline-stage {
-    border-right: none;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .pipeline-stage:last-of-type {
-    border-bottom: none;
   }
 
   h1 {

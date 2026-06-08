@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 from datetime import datetime
 
 import analyzer
+import db
 import fetcher
 
 
@@ -18,9 +20,22 @@ def main() -> None:
     limit = int(sys.argv[2]) if len(sys.argv) > 2 else int(os.environ.get("PIPELINE_LIMIT", "10"))
 
     print(f"=== pipeline старт {datetime.now().isoformat(timespec='seconds')} | запрос='{query}' лимит={limit} ===")
-    fetch_summary = fetcher.fetch_new(query, limit)
-    analyze_summary = analyzer.analyze_new()
-    print(f"=== pipeline финиш: {fetch_summary} | {analyze_summary} ===")
+    run_id = db.start_run(query, limit)
+    fetch_summary: dict = {}
+    analyze_summary: dict = {}
+    source = "fallback"
+    try:
+        fetch_summary = fetcher.fetch_new(query, limit)
+        source = fetch_summary.get("source", "fallback")
+        analyze_summary = analyzer.analyze_new()
+        db.finish_run(run_id, fetch_summary, analyze_summary, source, "completed", "")
+        print(f"=== pipeline финиш: {fetch_summary} | {analyze_summary} ===")
+    except Exception as exc:
+        tb = traceback.format_exc()
+        db.finish_run(run_id, fetch_summary, analyze_summary, source, "error", tb)
+        print(f"=== pipeline ОШИБКА: {exc.__class__.__name__}: {exc} ===")
+        print(tb)
+        raise
 
 
 if __name__ == "__main__":

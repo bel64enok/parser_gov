@@ -53,6 +53,61 @@ def requirements_payload() -> dict[str, Any]:
     }
 
 
+def admin_payload() -> dict[str, Any]:
+    """Данные для страницы мониторинга /admin: прогоны, очередь, конфиг ИИ."""
+    import ai as ai_module
+
+    runs = db.recent_runs(50)
+    status = db.pipeline_status()
+
+    active = next((r for r in runs if r.get("status") == "running"), None)
+    last_done = next((r for r in runs if r.get("status") in ("completed", "error", "stalled")), None)
+
+    conn = db.connect()
+    try:
+        pending_rows = conn.execute(
+            "SELECT number, title FROM tenders WHERE pipeline_status='fetched' "
+            "ORDER BY fetched_at DESC LIMIT 25"
+        ).fetchall()
+        error_rows = conn.execute(
+            "SELECT number, title, error FROM tenders WHERE pipeline_status='error' "
+            "ORDER BY fetched_at DESC LIMIT 25"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    gateway_url = os.environ.get("RMR_GATEWAY_URL", "")
+    gateway_host = urllib.parse.urlparse(gateway_url).hostname or "" if gateway_url else ""
+
+    return {
+        "current": {
+            "is_running": bool(active),
+            "active_run": active,
+            "last_run": last_done,
+            "source": status.get("source"),
+            "cron_note": "Пайплайн запускается по cron раз в час",
+        },
+        "runs": runs,
+        "queue": {
+            "pending": status.get("pending", 0),
+            "error": status.get("error", 0),
+            "pending_sample": [{"number": r["number"], "title": r["title"]} for r in pending_rows],
+            "error_sample": [
+                {"number": r["number"], "title": r["title"], "error": r["error"]}
+                for r in error_rows
+            ],
+        },
+        "config": {
+            "ai_enabled": ai_module.is_configured(),
+            "ai_model": ai_module.MODEL,
+            "ai_gateway": gateway_host,                # только хост, без ключа
+            "ai_configured_gateway": bool(gateway_url),
+            "text_budget": ai_module.TEXT_BUDGET,
+            "system_prompt": ai_module.SYSTEM_PROMPT,
+        },
+    }
+
+
 def _parse_multipart(rfile: io.RawIOBase, headers: object) -> dict:
     """Minimal multipart/form-data parser replacing the removed cgi.FieldStorage."""
     content_type: str = headers.get("Content-Type", "")
@@ -127,6 +182,14 @@ class TenderHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/pipeline":
             self.send_json(db.pipeline_status())
+            return
+        if parsed.path == "/api/admin":
+            self.send_json(admin_payload())
+            return
+        if parsed.path == "/admin":
+            self.send_response(302)
+            self.send_header("Location", "/admin.html")
+            self.end_headers()
             return
         self.serve_static(parsed.path)
 

@@ -16,7 +16,7 @@
         </div>
       </div>
       <nav class="nav">
-        <a href="#admin">Мониторинг</a>
+        <a href="/admin.html">Мониторинг</a>
         <a href="#search">Тендеры</a>
       </nav>
     </header>
@@ -29,62 +29,6 @@
           <p>
             Система загружает закупки из ЕИС, проставляет теги доменов Beeline, проверяет базовые критерии анализа и ранжирует карточки по потенциалу.
           </p>
-        </div>
-      </section>
-
-      <section class="admin-pipeline" id="admin" aria-label="Статус ETL-пайплайна">
-        <div class="pipeline-stages">
-
-          <div class="pipeline-stage" id="stageCollect">
-            <div class="stage-head">
-              <span class="stage-dot" id="dotCollect"></span>
-              <strong class="stage-name">Сбор</strong>
-              <span class="stage-source" id="sourceCollect">zakupki.gov.ru</span>
-            </div>
-            <div class="stage-body">
-              <span class="stage-count" id="countTotal">—</span>
-              <span class="stage-label">тендеров загружено</span>
-              <span class="stage-docs" id="docsTotal"></span>
-            </div>
-            <time class="stage-ts" id="tsCollect">—</time>
-          </div>
-
-          <div class="pipeline-arrow" aria-hidden="true">→</div>
-
-          <div class="pipeline-stage" id="stageAnalyze">
-            <div class="stage-head">
-              <span class="stage-dot" id="dotAnalyze"></span>
-              <strong class="stage-name">Анализ</strong>
-              <span class="stage-source" id="sourceAi">правила</span>
-            </div>
-            <div class="stage-body">
-              <span class="stage-count" id="countAnalyzed">—</span>
-              <span class="stage-label">проанализировано</span>
-              <span class="stage-pending" id="countPending"></span>
-            </div>
-            <time class="stage-ts" id="tsAnalyze">—</time>
-          </div>
-
-          <div class="pipeline-arrow" aria-hidden="true">→</div>
-
-          <div class="pipeline-stage" id="stageReady">
-            <div class="stage-head">
-              <span class="stage-dot" id="dotReady"></span>
-              <strong class="stage-name">Готово</strong>
-              <span class="stage-source" id="sourceReady">в интерфейсе</span>
-            </div>
-            <div class="stage-body">
-              <span class="stage-count" id="countReady">—</span>
-              <span class="stage-label">карточек доступно</span>
-              <span class="stage-error" id="countError"></span>
-            </div>
-            <time class="stage-ts" id="tsReady">—</time>
-          </div>
-
-        </div>
-        <div class="pipeline-errors" id="pipelineErrors" hidden>
-          <strong class="pipeline-errors__title">Ошибки (последние):</strong>
-          <ul id="pipelineErrorList" class="pipeline-error-list"></ul>
         </div>
       </section>
 

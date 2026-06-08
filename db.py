@@ -230,6 +230,7 @@ def _row_to_item(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
             "name": doc["filename"],
             "type": doc["type"] or "file",
             "text": doc["extracted_text"] or "",
+            "source_url": row["url"] or "",
             "highlights": json.loads(doc["highlights_json"] or "[]"),
         })
     return {

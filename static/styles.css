@@ -228,12 +228,6 @@ h1 {
   line-height: 1.45;
 }
 
-.upload {
-  background: var(--white);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
 .tag-filter-list {
   display: flex;
   flex-wrap: wrap;
@@ -644,12 +638,6 @@ h2 {
   background: var(--yellow-dark);
 }
 
-.upload {
-  min-width: 0;
-  margin-top: 30px;
-  padding: 20px;
-}
-
 .drawer-backdrop {
   display: none;
   position: fixed;
@@ -809,6 +797,15 @@ h2 {
   gap: 12px;
 }
 
+.document-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .document-card {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -839,10 +836,18 @@ h2 {
   color: var(--muted);
 }
 
+.document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 14px 0;
+}
+
 .download-document,
-.download-all-documents {
+.download-all-documents,
+.document-source-link {
   min-height: 36px;
-  margin: 0 14px 14px;
+  margin: 0;
   background: #fff;
 }
 
@@ -907,29 +912,6 @@ mark {
 
 .small-empty {
   min-height: 88px;
-}
-
-.upload p {
-  color: var(--muted);
-  line-height: 1.45;
-}
-
-.upload form {
-  display: grid;
-  gap: 10px;
-}
-
-.upload input[type="file"] {
-  padding: 12px;
-}
-
-.upload-result {
-  margin-top: 14px;
-  padding: 14px;
-  border-radius: 8px;
-  background: #f3f3f3;
-  color: var(--muted);
-  white-space: pre-wrap;
 }
 
 .requirements {

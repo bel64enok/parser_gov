@@ -15,16 +15,6 @@
           <span>Прототип анализа закупок ЕИС</span>
         </div>
       </div>
-      <nav class="nav">
-        <a href="#search">Теги</a>
-        <a href="#queue">Очередь</a>
-        <button type="button" id="syncBtn" class="sync-btn" aria-label="Синхронизировать список тендеров с ЕИС">
-          <svg class="sync-icon" width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M17 10a7 7 0 1 1-1.465-4.33M17 3v4h-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <span class="sync-label">Обновить</span>
-        </button>
-      </nav>
     </header>
 
     <main>
@@ -38,27 +28,60 @@
         </div>
       </section>
 
-      <section class="metrics" id="queue">
-        <article>
-          <span>В очереди</span>
-          <strong id="queueCount">0</strong>
-          <small>приоритет по дате окончания</small>
-        </article>
-        <article>
-          <span>Высокий потенциал</span>
-          <strong id="hotCount">0</strong>
-          <small>score 75+</small>
-        </article>
-        <article>
-          <span>Просмотрено</span>
-          <strong id="viewedCount">0</strong>
-          <small>пользователем</small>
-        </article>
-        <article>
-          <span>Источник</span>
-          <strong id="sourceLabel">-</strong>
-          <small id="sourceHint">ожидание парсинга</small>
-        </article>
+      <section class="admin-pipeline" id="admin" aria-label="Статус ETL-пайплайна">
+        <div class="pipeline-stages">
+
+          <div class="pipeline-stage" id="stageCollect">
+            <div class="stage-head">
+              <span class="stage-dot" id="dotCollect"></span>
+              <strong class="stage-name">Сбор</strong>
+              <span class="stage-source" id="sourceCollect">zakupki.gov.ru</span>
+            </div>
+            <div class="stage-body">
+              <span class="stage-count" id="countTotal">—</span>
+              <span class="stage-label">тендеров загружено</span>
+              <span class="stage-docs" id="docsTotal"></span>
+            </div>
+            <time class="stage-ts" id="tsCollect">—</time>
+          </div>
+
+          <div class="pipeline-arrow" aria-hidden="true">→</div>
+
+          <div class="pipeline-stage" id="stageAnalyze">
+            <div class="stage-head">
+              <span class="stage-dot" id="dotAnalyze"></span>
+              <strong class="stage-name">Анализ</strong>
+              <span class="stage-source" id="sourceAi">правила</span>
+            </div>
+            <div class="stage-body">
+              <span class="stage-count" id="countAnalyzed">—</span>
+              <span class="stage-label">проанализировано</span>
+              <span class="stage-pending" id="countPending"></span>
+            </div>
+            <time class="stage-ts" id="tsAnalyze">—</time>
+          </div>
+
+          <div class="pipeline-arrow" aria-hidden="true">→</div>
+
+          <div class="pipeline-stage" id="stageReady">
+            <div class="stage-head">
+              <span class="stage-dot" id="dotReady"></span>
+              <strong class="stage-name">Готово</strong>
+              <span class="stage-source" id="sourceReady">в интерфейсе</span>
+            </div>
+            <div class="stage-body">
+              <span class="stage-count" id="countReady">—</span>
+              <span class="stage-label">карточек доступно</span>
+              <span class="stage-error" id="countError"></span>
+            </div>
+            <time class="stage-ts" id="tsReady">—</time>
+          </div>
+
+        </div>
+        <div class="pipeline-errors" id="pipelineErrors" hidden>
+          <strong class="pipeline-errors__title">Ошибки (последние):</strong>
+          <ul id="pipelineErrorList" class="pipeline-error-list"></ul>
+        </div>
       </section>
 
       <section class="workspace" id="search">

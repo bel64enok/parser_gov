@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import config  # noqa: F401 — загружает .env до обращений к ai
+
 import io
 import json
 import mimetypes

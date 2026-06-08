@@ -71,6 +71,14 @@
             </div>
             <a id="sourceUrl" href="#" target="_blank" rel="noreferrer">Открыть источник ЕИС</a>
           </div>
+          <div class="filter-bar date-filter">
+            <span class="filter-bar__label">Дата размещения</span>
+            <label class="date-field">с <input type="date" id="dateFrom" /></label>
+            <label class="date-field">по <input type="date" id="dateTo" /></label>
+            <input type="search" id="queryInput" placeholder="Поиск по названию" autocomplete="off" />
+            <button type="button" id="applyFilters">Применить</button>
+            <button type="button" id="resetFilters">Сбросить даты</button>
+          </div>
           <div class="filter-bar">
             <span class="filter-bar__label">Фильтр по тегам</span>
             <div id="tagFilters" class="tag-filter-list"></div>

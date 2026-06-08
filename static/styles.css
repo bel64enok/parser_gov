@@ -103,6 +103,24 @@ a {
   font-size: 12px;
 }
 
+.nav {
+  display: flex;
+  gap: 8px;
+}
+
+.nav a {
+  padding: 9px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.nav a:hover {
+  background: var(--yellow);
+  color: var(--black);
+}
 
 main {
   width: 100%;
@@ -995,7 +1013,8 @@ mark {
 
 @media (max-width: 680px) {
   .topbar,
-  .section-head {
+  .section-head,
+  .nav {
     align-items: flex-start;
     flex-direction: column;
   }

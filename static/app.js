@@ -387,11 +387,11 @@ async function loadTenders() {
     renderTagFilters();
     renderTenders();
 
-    if (syncLabel) {
-      const now = new Date();
-      const hhmm = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-      syncLabel.textContent = `Обновлено в ${hhmm}`;
-      setTimeout(() => { syncLabel.textContent = 'Обновить'; }, 5000);
+    if (syncBtn && syncLabel) {
+      const isReal = payload.source === 'zakupki.gov.ru';
+      const hhmm = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      syncLabel.textContent = `${isReal ? 'ЕИС' : 'Демо'} · ${hhmm}`;
+      syncBtn.classList.toggle('demo', !isReal);
     }
   } catch {
     if (syncBtn) syncBtn.classList.add('error');

@@ -120,6 +120,63 @@ a {
   color: var(--black);
 }
 
+.sync-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--black);
+  border-radius: 6px;
+  background: var(--yellow);
+  color: var(--black);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 120ms ease-out, opacity 120ms ease-out;
+}
+
+.sync-btn:hover {
+  background: var(--yellow-dark);
+}
+
+.sync-btn:focus-visible {
+  outline: 2px solid var(--black);
+  outline-offset: 2px;
+}
+
+.sync-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
+.sync-btn.error {
+  background: #ffe5e7;
+  border-color: var(--risk);
+  color: #a31d24;
+}
+
+.sync-icon {
+  flex-shrink: 0;
+  transition: transform 300ms ease-out;
+}
+
+.sync-btn.loading .sync-icon {
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sync-btn.loading .sync-icon {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
 main {
   width: 100%;
   max-width: 1440px;

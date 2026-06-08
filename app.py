@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import cgi
 import html
 import io
 import json
@@ -672,6 +671,44 @@ def requirements_payload() -> dict[str, Any]:
     }
 
 
+def _parse_multipart(rfile: io.RawIOBase, headers: object) -> dict:
+    """Minimal multipart/form-data parser replacing the removed cgi.FieldStorage."""
+    content_type: str = headers.get("Content-Type", "")
+    content_length = int(headers.get("Content-Length", 0) or 0)
+    boundary: bytes | None = None
+    for chunk in content_type.split(";"):
+        chunk = chunk.strip()
+        if chunk.startswith("boundary="):
+            boundary = chunk[9:].strip().encode()
+            break
+    if not boundary:
+        return {}
+    body = rfile.read(content_length)
+    fields: dict = {}
+    for raw_part in body.split(b"--" + boundary)[1:]:
+        if raw_part.lstrip(b"\r\n").startswith(b"--"):
+            break
+        if b"\r\n\r\n" not in raw_part:
+            continue
+        raw_headers, content = raw_part.split(b"\r\n\r\n", 1)
+        if content.endswith(b"\r\n"):
+            content = content[:-2]
+        name: str | None = None
+        filename: str | None = None
+        for line in raw_headers.decode("utf-8", errors="replace").splitlines():
+            lower = line.lower()
+            if "content-disposition" in lower:
+                for item in line.split(";"):
+                    item = item.strip()
+                    if item.startswith("name="):
+                        name = item[5:].strip('"')
+                    elif item.startswith("filename="):
+                        filename = item[9:].strip('"')
+        if name:
+            fields[name] = type("_Field", (), {"filename": filename, "file": io.BytesIO(content)})()
+    return fields
+
+
 class TenderHandler(BaseHTTPRequestHandler):
     server_version = "TenderParserPrototype/0.1"
 
@@ -708,9 +745,8 @@ class TenderHandler(BaseHTTPRequestHandler):
         if parsed.path != "/api/upload":
             self.send_json({"error": "Not found"}, 404)
             return
-        content_type = self.headers.get("Content-Type", "")
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type})
-        upload = form["file"] if "file" in form else None
+        form = _parse_multipart(self.rfile, self.headers)
+        upload = form.get("file")
         if upload is None or not getattr(upload, "filename", ""):
             self.send_json({"error": "Файл не передан"}, 400)
             return

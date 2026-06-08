@@ -446,7 +446,7 @@ def analyze_tender(tender: dict[str, Any], document_text: str = "") -> dict[str,
     }
 
 
-def build_search_url(query: str, page: int = 1, limit: int = 10) -> str:
+def build_search_url(query: str, page: int = 1, limit: int = 10, refresh_token: str | None = None) -> str:
     params = {
         "searchString": query,
         "morphology": "on",
@@ -461,16 +461,20 @@ def build_search_url(query: str, page: int = 1, limit: int = 10) -> str:
         "pc": "on",
         "currencyIdGeneral": "-1",
     }
+    if refresh_token:
+        params["_refresh"] = refresh_token
     return f"{ZAKUPKI_BASE}/epz/order/extendedsearch/results.html?{urllib.parse.urlencode(params)}"
 
 
-def fetch_zakupki_html(query: str, limit: int) -> tuple[str, str]:
-    url = build_search_url(query, limit=limit)
+def fetch_zakupki_html(query: str, limit: int, refresh_token: str | None = None) -> tuple[str, str]:
+    url = build_search_url(query, limit=limit, refresh_token=refresh_token)
     request = urllib.request.Request(
         url,
         headers={
             "User-Agent": "Mozilla/5.0 TenderParserPrototype/0.1",
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
     )
     with urllib.request.urlopen(request, timeout=14) as response:
@@ -550,11 +554,15 @@ def parse_zakupki_results(page_html: str) -> list[dict[str, Any]]:
     return tenders[:20]
 
 
-def search_tenders(query: str, limit: int = 10) -> dict[str, Any]:
+def search_tenders(query: str, limit: int = 10, refresh_token: str | None = None) -> dict[str, Any]:
     query = query.strip() or "мобильная связь"
+    started = time.monotonic()
+    parsed_at = datetime.now().isoformat(timespec="seconds")
+    live_count = 0
     try:
-        page_html, source_url = fetch_zakupki_html(query, limit)
+        page_html, source_url = fetch_zakupki_html(query, limit, refresh_token=refresh_token)
         tenders = parse_zakupki_results(page_html)
+        live_count = len(tenders)
         if tenders:
             source = "zakupki.gov.ru"
             error = ""
@@ -563,7 +571,7 @@ def search_tenders(query: str, limit: int = 10) -> dict[str, Any]:
             source = "fallback"
             error = "ЕИС ответила, но структура страницы не распознана. Показаны демо-записи."
     except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
-        source_url = build_search_url(query, limit=limit)
+        source_url = build_search_url(query, limit=limit, refresh_token=refresh_token)
         tenders = sample_tenders()
         source = "fallback"
         error = f"ЕИС недоступна или ответила слишком медленно: {exc.__class__.__name__}."
@@ -587,7 +595,17 @@ def search_tenders(query: str, limit: int = 10) -> dict[str, Any]:
             item["analysis"] = analyze_tender(item, "\n".join(document["text"] for document in item["documents"]))
             enriched.append(item)
     enriched.sort(key=lambda item: (-item["analysis"]["score"], item.get("deadline") or "99.99.9999"))
-    return {"items": enriched, "source": source, "source_url": source_url, "error": error, "query": query}
+    return {
+        "items": enriched,
+        "source": source,
+        "source_url": source_url,
+        "error": error,
+        "query": query,
+        "parsed_at": parsed_at,
+        "parse_duration_ms": int((time.monotonic() - started) * 1000),
+        "live_count": live_count,
+        "refresh_token": refresh_token or "",
+    }
 
 
 def extract_docx(path: Path) -> str:
@@ -736,7 +754,8 @@ class TenderHandler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             search = query.get("query", ["мобильная связь"])[0]
             limit = int(query.get("limit", ["10"])[0])
-            self.send_json(search_tenders(search, max(1, min(limit, 100))))
+            refresh_token = query.get("refresh", [str(int(time.time() * 1000))])[0]
+            self.send_json(search_tenders(search, max(1, min(limit, 100)), refresh_token=refresh_token))
             return
         self.serve_static(parsed.path)
 

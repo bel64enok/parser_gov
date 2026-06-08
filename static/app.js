@@ -32,7 +32,9 @@ function updateMetrics(payload) {
   byId('hotCount').textContent = tenders.filter((item) => item.analysis.score >= 75).length;
   byId('viewedCount').textContent = state.viewed.size;
   byId('sourceLabel').textContent = payload.source === 'zakupki.gov.ru' ? 'ЕИС' : 'Demo';
-  byId('sourceHint').textContent = payload.error || 'Данные получены из поиска';
+  const parsedAt = payload.parsed_at ? `Парсинг: ${payload.parsed_at}` : 'Парсинг выполнен';
+  const liveCount = Number.isFinite(payload.live_count) ? `, ЕИС: ${payload.live_count}` : '';
+  byId('sourceHint').textContent = payload.error ? `${parsedAt}${liveCount}. ${payload.error}` : `${parsedAt}${liveCount}`;
   byId('sourceUrl').href = payload.source_url || '#';
 }
 
@@ -376,7 +378,8 @@ async function loadTenders() {
   byId('resultNote').textContent = 'Загрузка';
 
   try {
-    const response = await fetch('/api/tenders?limit=50');
+    const refreshToken = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const response = await fetch(`/api/tenders?limit=50&refresh=${encodeURIComponent(refreshToken)}`, { cache: 'no-store' });
     const payload = await response.json();
     state.tenders = payload.items || [];
     state.sourceUrl = payload.source_url;
@@ -389,7 +392,8 @@ async function loadTenders() {
 
     if (syncBtn && syncLabel) {
       const isReal = payload.source === 'zakupki.gov.ru';
-      const hhmm = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      const parsedDate = payload.parsed_at ? new Date(payload.parsed_at) : new Date();
+      const hhmm = parsedDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
       syncLabel.textContent = `${isReal ? 'ЕИС' : 'Демо'} · ${hhmm}`;
       syncBtn.classList.toggle('demo', !isReal);
     }

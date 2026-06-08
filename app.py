@@ -318,13 +318,29 @@ def collect_evidence(tender: dict[str, Any], document_text: str) -> list[dict[st
 
 def documents_for_tender(tender: dict[str, Any]) -> list[dict[str, Any]]:
     text = document_text_for_tender(tender)
+    source_url = tender.get("url") or build_search_url(str(tender.get("number", "")))
     return [
         {
             "id": "notice",
             "name": "Извещение и распознанный текст карточки",
             "type": "Извещение ЕИС",
             "text": text,
+            "source_url": source_url,
             "highlights": collect_evidence(tender, text),
+        },
+        {
+            "id": "eis-documents",
+            "name": "Прикрепленные документы на сайте госзакупок",
+            "type": "Документы ЕИС",
+            "text": (
+                "Откройте источник ЕИС, чтобы посмотреть и скачать оригинальные файлы, "
+                "прикрепленные к карточке тендера на сайте госзакупок.\n\n"
+                f"Номер закупки: {tender.get('number', '')}.\n"
+                f"Наименование: {tender.get('title', '')}.\n"
+                f"Источник: {source_url}"
+            ),
+            "source_url": source_url,
+            "highlights": [],
         }
     ]
 

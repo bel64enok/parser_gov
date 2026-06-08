@@ -171,6 +171,10 @@ function renderDocuments(documents) {
     return '<div class="empty small-empty">К карточке пока не прикреплены документы</div>';
   }
   return `
+    <div class="document-toolbar">
+      <span>${documents.length} документа в карточке</span>
+      <span>Оригиналы открываются на сайте госзакупок</span>
+    </div>
     <div class="document-list">
       ${documents
         .map((document) => {
@@ -178,10 +182,15 @@ function renderDocuments(documents) {
           return `
             <details class="document-card" open>
               <summary>
-                <span>${escapeHtml(document.name)}</span>
-                <small>${escapeHtml(document.type)} • ${terms.length} выделений</small>
+                <span>
+                  ${escapeHtml(document.name)}
+                  <small>${escapeHtml(document.type)} • ${terms.length} выделений</small>
+                </span>
               </summary>
-              <button class="download-document" type="button" data-doc-id="${escapeHtml(document.id)}">Выгрузить документ</button>
+              <div class="document-actions">
+                ${document.source_url ? `<a class="open-link document-source-link" href="${escapeHtml(document.source_url)}" target="_blank" rel="noreferrer">Открыть в ЕИС</a>` : ''}
+                <button class="download-document" type="button" data-doc-id="${escapeHtml(document.id)}">Выгрузить текст</button>
+              </div>
               ${renderEvidence(document.highlights || [])}
               <pre class="document-text">${highlightText(document.text, terms)}</pre>
             </details>
@@ -254,6 +263,7 @@ function renderTenders() {
               ${state.viewed.has(tender.number) ? `<span class="tag viewed-tag">Просмотрено</span>` : ''}
               <span class="tag ${priorityTagClass(analysis.priority)}">Приоритет: ${escapeHtml(analysis.priority)}</span>
               <span class="tag">Окончание: ${escapeHtml(deadline)}</span>
+              <span class="tag">Документы: ${(tender.documents || []).length}</span>
               ${tags.map((tag) => `<span class="tag ${tagClass(tag)}">${escapeHtml(tag)}</span>`).join('')}
             </div>
           </div>
@@ -416,45 +426,6 @@ async function loadTenders() {
   }
 }
 
-async function uploadFile(event) {
-  event.preventDefault();
-  if (!state.selectedNumber) {
-    byId('uploadResult').textContent = 'Сначала выберите тендер в списке — файл прикрепится к его карточке.';
-    return;
-  }
-  const file = byId('fileInput').files[0];
-  if (!file) {
-    byId('uploadResult').textContent = 'Выберите файл документации.';
-    return;
-  }
-  const body = new FormData();
-  body.append('file', file);
-  byId('uploadResult').textContent = 'Файл загружается и анализируется...';
-  const response = await fetch('/api/upload', { method: 'POST', body });
-  const payload = await response.json();
-  if (!response.ok) {
-    byId('uploadResult').textContent = payload.error || 'Ошибка загрузки';
-    return;
-  }
-  const analysis = payload.analysis;
-  const selected = state.tenders.find((item) => item.number === state.selectedNumber);
-  if (selected && payload.document) {
-    selected.documents = [...(selected.documents || []), payload.document];
-  }
-  byId('uploadResult').innerHTML = `
-    <strong>${escapeHtml(payload.file)}</strong><br>
-    Извлечено символов: ${payload.characters}<br>
-    Домены: ${escapeHtml((analysis.domains || []).join(', ') || 'не найдены')}<br>
-    Продукты: ${escapeHtml((analysis.products || []).join(', ') || 'не найдены')}<br>
-    Score: ${analysis.score}/100<br><br>
-    ${selected ? `Документ прикреплен к карточке № ${escapeHtml(selected.number)}.<br><br>` : ''}
-    <span>${escapeHtml(payload.preview || 'Текстовый слой не распознан')}</span>
-  `;
-  if (selected) {
-    renderDetail(selected);
-  }
-}
-
 document.addEventListener('submit', (event) => {
   if (event.target.id === 'manualTagForm') {
     event.preventDefault();
@@ -527,8 +498,6 @@ document.addEventListener('keydown', (event) => {
     }
   }
 });
-
-byId('uploadForm').addEventListener('submit', uploadFile);
 
 function downloadText(filename, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });

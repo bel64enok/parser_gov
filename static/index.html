@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tender Radar</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="beeline-logo" aria-label="Beeline"><span></span></div>
+        <div>
+          <strong>beeline Tender Radar</strong>
+          <span>Прототип анализа закупок ЕИС</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="#search">Теги</a>
+        <a href="#queue">Очередь</a>
+        <a href="#upload">Документы</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">zakupki.gov.ru • критерии МОБ • продуктовая маркировка</p>
+          <h1>Быстрый отбор тендеров для участия</h1>
+          <p>
+            Система загружает закупки из ЕИС, проставляет теги доменов Beeline, проверяет базовые критерии анализа и ранжирует карточки по потенциалу.
+          </p>
+        </div>
+        <section class="search-panel tag-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Отбор по тегам</h2>
+              <p>Теги автоматически проставляются на карточках тендеров. Выберите один или несколько тегов, чтобы сузить список.</p>
+            </div>
+            <button type="button" id="resetTags">Все</button>
+          </div>
+          <div id="tagFilters" class="tag-filter-list"></div>
+        </section>
+      </section>
+
+      <section class="metrics" id="queue">
+        <article>
+          <span>В очереди</span>
+          <strong id="queueCount">0</strong>
+          <small>приоритет по дате окончания</small>
+        </article>
+        <article>
+          <span>Высокий потенциал</span>
+          <strong id="hotCount">0</strong>
+          <small>score 75+</small>
+        </article>
+        <article>
+          <span>Просмотрено</span>
+          <strong id="viewedCount">0</strong>
+          <small>пользователем</small>
+        </article>
+        <article>
+          <span>Источник</span>
+          <strong id="sourceLabel">-</strong>
+          <small id="sourceHint">ожидание поиска</small>
+        </article>
+      </section>
+
+      <section class="workspace" id="search">
+        <section class="results">
+          <div class="section-head">
+            <div>
+              <h2>Карточки тендеров</h2>
+              <p id="resultNote">Загружается список тендеров.</p>
+            </div>
+            <a id="sourceUrl" href="#" target="_blank" rel="noreferrer">Открыть источник ЕИС</a>
+          </div>
+          <div id="tenderList" class="tender-list"></div>
+          <div id="pagination" class="pagination"></div>
+        </section>
+      </section>
+
+      <section class="details-grid">
+        <section class="detail-panel" id="detailPanel">
+          <div class="section-head">
+            <div>
+              <h2>Карточка анализа</h2>
+              <p>Выберите закупку из списка.</p>
+            </div>
+          </div>
+          <div id="detailBody" class="empty">Нет выбранной закупки</div>
+        </section>
+
+        <section class="upload" id="upload">
+          <h2>Загрузка документации</h2>
+          <p>Файл будет прикреплен к выбранной карточке тендера. Поддержка прототипа: zip, docx, xlsx, pdf с текстовым слоем, txt/csv.</p>
+          <form id="uploadForm">
+            <input type="file" id="fileInput" name="file" />
+            <button type="submit">Проанализировать</button>
+          </form>
+          <div id="uploadResult" class="upload-result">Файл не выбран</div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

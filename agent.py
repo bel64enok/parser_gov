@@ -18,20 +18,29 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any, Callable
 
 import ai  # переиспользуем MODEL / is_configured / построение клиента
-from rules import DOMAIN_TRIGGERS, PRODUCT_CATALOG, evidence_snippet, lower_text
+from rules import DOMAIN_TRIGGERS, PRODUCT_CATALOG, evidence_snippet, lower_text, search_snippets
 
 MODEL = ai.MODEL
 
-MAX_STEPS = 14          # предел вызовов инструментов на тендер (упёрлись → частичная карточка)
+MAX_STEPS = 16          # предел вызовов инструментов на тендер (упёрлись → частичная карточка)
 CHUNK_CHARS = 6_000     # размер куска read_document
-TENDER_TIMEOUT = 120    # сек, бюджет на один тендер
+TENDER_TIMEOUT = 180    # сек, бюджет на один тендер
 MAX_MATCHES = 6         # сколько совпадений отдаёт search_documents
 DOMAINS = ["МОБ", "ФИКС", "SI", "М2М", "BigData", "Cloud", "SBVAS", "не определён"]
 CONFIDENCE = ["высокая", "средняя", "низкая"]
+
+# Режим стадии 2 (env AGENT_MODE): 'guided' — видимое чтение ключевых документов + один
+# вызов извлечения (наглядно + качественно); 'oneshot' — один вызов по всему тексту;
+# 'react' — модельная петля инструментов (наглядная навигация, но менее стабильна).
+ONESHOT_TEXT_BUDGET = 40_000  # символов документации, отдаваемых в один вызов
+
+def _agent_mode() -> str:
+    return (os.environ.get("AGENT_MODE") or "oneshot").strip().lower()
 
 # Переключатель режима на уровне процесса: None — не пробовали, True/False — выбран.
 _NATIVE_TOOLS: bool | None = None
@@ -147,18 +156,38 @@ _TOOLS = [
 ]
 
 SYSTEM_PROMPT = (
-    "Ты аналитик пресейла телеком-оператора Beeline. Задача: по комплекту документов закупки "
-    "извлечь СТРУКТУРИРОВАННУЮ карточку требований. Не выдумывай: если факта нет в документации — "
-    "оставь value пустым. Каждый извлечённый факт сопровождай source_file и source_quote (точная "
-    "цитата из документа, откуда взято значение).\n\n"
-    "Работай по шагам с инструментами:\n"
-    "1) list_documents — посмотри, какие файлы есть;\n"
-    "2) read_document / search_documents — найди обеспечение заявки и контракта, объём, сроки, "
-    "штрафы, лицензии и квалификацию участника, SLA и тех. требования;\n"
-    "3) lookup_dictionary — сверь домен;\n"
-    "4) submit_card — отдай карточку.\n"
-    "Не пытайся прочитать всё подряд: ищи целенаправленно. Уложись в несколько шагов. "
-    "Отвечай по-русски."
+    "Ты аналитик пресейла телеком-оператора Beeline. Цель — ПОЛНОСТЬЮ заполнить структурированную "
+    "карточку требований по ПРИЛОЖЕННЫМ ДОКУМЕНТАМ. Не выдумывай: чего нет в тексте — оставь value "
+    "пустым. Каждый факт сопровождай source_file и source_quote (точная цитата из документа).\n\n"
+    "Инструменты: list_documents, read_document(n, chunk), search_documents(query), "
+    "lookup_dictionary, submit_card.\n\n"
+    "ПОРЯДОК РАБОТЫ:\n"
+    "1) list_documents — посмотри список файлов и их размеры.\n"
+    "2) ПРОЧИТАЙ ключевые документы через read_document (проект контракта, ТЗ, обоснование НМЦ, "
+    "извещение) — по кускам, пока не увидишь нужные факты. Чтение документов ОБЯЗАТЕЛЬНО: карточка "
+    "строится из их текста, а не из метаданных закупки.\n"
+    "3) search_documents — точечно под конкретный факт. Ищи ОДНИМ коротким ключевым словом (корень), "
+    "без длинных фраз: «обеспечение», «объём», «срок», «штраф», «лицензия». Пусто → смени слово или "
+    "читай документ напрямую, НЕ повторяй ту же фразу.\n"
+    "4) lookup_dictionary — сверь домен.\n"
+    "5) submit_card — заполни КАЖДОЕ поле, для которого есть данные из прочитанного: обеспечение "
+    "заявки и контракта, объём/количество, территорию, оплату, штрафы, сроки и ключевые даты, "
+    "требования к участнику (лицензии/квалификация), SLA и тех. условия, домен, summary, риски.\n\n"
+    "ВАЖНО: НЕ сабмить полупустую карточку, пока не прочитал ключевые документы. Стартовый список "
+    "НАЙДЕНО — подсказка, но детали бери из прочитанного текста. Бюджет шагов ограничен: не зацикливайся "
+    "на поиске — читай документы и заполняй поля. Отвечай по-русски."
+)
+
+ONESHOT_SYSTEM = (
+    "Ты аналитик пресейла телеком-оператора Beeline. По карточке закупки и тексту документации "
+    "заполни СТРУКТУРИРОВАННУЮ карточку требований ОДНИМ вызовом submit_card. "
+    "Извлеки: предмет, объём/количество, территорию; обеспечение заявки и контракта, оплату, "
+    "штрафы/неустойки; сроки оказания и исполнения, ключевые даты; требования к участнику "
+    "(лицензии, квалификация) списком present=true/false; SLA, ёмкость/скорости, покрытие, "
+    "прочие тех. условия; домен (один из словаря), краткое summary, риски, уверенность.\n"
+    "Правила: НЕ выдумывай — если факта нет в тексте, оставь value пустым (''). Для каждого "
+    "факта по возможности укажи source_file (имя файла) и source_quote (точную цитату из текста). "
+    "Отвечай ТОЛЬКО вызовом submit_card, по-русски."
 )
 
 
@@ -193,19 +222,30 @@ class DocStore:
         return header + piece
 
     def search(self, query: str) -> str:
-        q = lower_text(query).strip()
+        q = (query or "").strip()
         if not q:
             return "Пустой запрос."
-        matches: list[str] = []
+        # Морфолого-толерантный поиск по корням токенов, скан ВСЕХ документов,
+        # ранжирование по числу совпавших токенов запроса.
+        scored: list[tuple[int, int, str, list[str]]] = []
         for i, d in enumerate(self.docs):
-            snippet = evidence_snippet(d["text"], query, radius=180)
-            if snippet:
-                matches.append(f"[{i}] {d['filename']}: …{snippet}…")
-            if len(matches) >= MAX_MATCHES:
+            score, snips = search_snippets(d["text"], query, radius=180, max_snippets=2)
+            if score > 0:
+                scored.append((score, i, d["filename"], snips))
+        if not scored:
+            return (f"По запросу «{query}» совпадений не найдено. "
+                    "Попробуй ОДНО короткое ключевое слово (без склонений) "
+                    "или прочитай документ напрямую через read_document.")
+        scored.sort(key=lambda x: -x[0])
+        lines: list[str] = []
+        for _score, i, fname, snips in scored:
+            for sn in snips:
+                lines.append(f"[{i}] {fname}: …{sn}…")
+                if len(lines) >= MAX_MATCHES:
+                    break
+            if len(lines) >= MAX_MATCHES:
                 break
-        if not matches:
-            return f"По запросу «{query}» совпадений не найдено."
-        return "\n".join(matches)
+        return "\n".join(lines)
 
 
 def _dictionary() -> str:
@@ -232,10 +272,18 @@ def _human(tool: str, args: dict[str, Any], store: "DocStore") -> str:
     return "рассуждает"
 
 
-def _emit(on_step: Callable[[str], None] | None, tool: str, args: dict[str, Any], store: "DocStore") -> None:
+def _emit(on_step: Callable[..., None] | None, tool: str, args: dict[str, Any], store: "DocStore",
+          *, step_count: int = 0, tool_calls: int = 0, tokens: int = 0) -> None:
+    _emit_text(on_step, _human(tool, args, store),
+               step_count=step_count, tool_calls=tool_calls, tokens=tokens)
+
+
+def _emit_text(on_step: Callable[..., None] | None, text: str,
+               *, step_count: int = 0, tool_calls: int = 0, tokens: int = 0) -> None:
+    """Живой прогресс: текст текущего действия + метрики (шаги/вызовы/токены)."""
     if on_step:
         try:
-            on_step(_human(tool, args, store))
+            on_step(text, step_count, tool_calls, tokens)
         except Exception:
             pass
 
@@ -354,7 +402,32 @@ def _exec_tool(name: str, args: dict[str, Any], store: DocStore) -> str:
     return f"Неизвестный инструмент: {name}"
 
 
-def _card_metadata(tender: dict[str, Any]) -> str:
+def _evidence_digest(evidence: list[dict[str, Any]] | None, limit: int = 12) -> str:
+    """Компактный стартовый список улик из rules.collect_evidence для фронт-загрузки.
+
+    Даёт модели готовые фрагменты (домен/способ/ОКПД/сроки), чтобы не искать заново.
+    """
+    if not evidence:
+        return ""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in evidence:
+        label = str(item.get("label", "")).strip()
+        snippet = str(item.get("snippet", "")).strip()
+        if not snippet:
+            continue
+        key = f"{label}:{snippet[:60]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"• {label}: …{snippet[:200]}…")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
+def _card_metadata(tender: dict[str, Any], evidence_digest: str = "") -> str:
+    found = f"\nНАЙДЕНО (стартовые фрагменты — используй, не ищи заново):\n{evidence_digest}\n" if evidence_digest else ""
     return (
         f"КАРТОЧКА ЗАКУПКИ:\n"
         f"Номер: {tender.get('number', '')}\n"
@@ -365,18 +438,179 @@ def _card_metadata(tender: dict[str, Any]) -> str:
         f"ОКПД2: {tender.get('okpd2', '')}\n"
         f"Дата размещения: {tender.get('publish_date', '')}\n"
         f"Окончание подачи: {tender.get('deadline', '')}\n"
-        f"Закон: {tender.get('law', '')}\n\n"
+        f"Закон: {tender.get('law', '')}\n"
+        f"{found}\n"
         "Извлеки структурированную карточку требований. Начни с list_documents."
     )
+
+
+# ── One-shot извлечение (один вызов submit_card по собранному тексту) ───────
+
+def _assemble_text(store: DocStore, budget: int = ONESHOT_TEXT_BUDGET) -> str:
+    """Склеивает текст документов (с заголовками-именами) до лимита символов."""
+    parts: list[str] = []
+    total = 0
+    for d in store.docs:
+        block = f"# {d['filename']}\n{d['text'] or ''}"
+        if total + len(block) > budget:
+            block = block[: max(0, budget - total)]
+        if block:
+            parts.append(block)
+            total += len(block)
+        if total >= budget:
+            break
+    return "\n\n".join(parts)
+
+
+def _meta_block(tender: dict[str, Any], evidence_digest: str) -> str:
+    found = f"\nНАЙДЕНО (стартовые фрагменты):\n{evidence_digest}\n" if evidence_digest else ""
+    return (
+        "КАРТОЧКА ЗАКУПКИ:\n"
+        f"Номер: {tender.get('number', '')}\n"
+        f"Наименование: {tender.get('title', '')}\n"
+        f"Заказчик: {tender.get('customer', '')}\n"
+        f"Способ закупки: {tender.get('method', '')}\n"
+        f"НМЦК: {tender.get('price', '')}\n"
+        f"ОКПД2: {tender.get('okpd2', '')}\n"
+        f"Дата размещения: {tender.get('publish_date', '')}\n"
+        f"Окончание подачи: {tender.get('deadline', '')}\n"
+        f"Закон: {tender.get('law', '')}\n"
+        f"{found}"
+    )
+
+
+def _oneshot_user(tender: dict[str, Any], store: DocStore, evidence_digest: str) -> str:
+    text = _assemble_text(store) or "(документы без распознанного текста — заполни по карточке)"
+    return f"{_meta_block(tender, evidence_digest)}\nТЕКСТ ДОКУМЕНТАЦИИ:\n{text}"
+
+
+_ONESHOT_JSON_HINT = (
+    "\n\nИнструментов-функций нет. Верни СТРОГО JSON-объект карточки со схемой: "
+    "subject{predmet,volume,territory}, commercial{bid_security,contract_security,payment,penalties}, "
+    "deadlines{service_period,contract_term,key_dates}, technical{sla,capacity,coverage,other}, "
+    "participant_requirements:[{requirement,present,source_file,source_quote}], domain, summary, "
+    "risks:[...], confidence. Каждый факт = {value, source_file, source_quote}."
+)
+
+
+def _submit_extract(client, model: str, user_text: str) -> tuple[dict[str, Any] | None, int]:
+    """Один LLM-вызов извлечения карточки: форсируем submit_card; фолбэк — строгий JSON.
+    Возвращает (card | None, tokens). card=None только при полном сбое обоих вызовов."""
+    submit_tool = _TOOLS[-1]  # submit_card
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": ONESHOT_SYSTEM}, {"role": "user", "content": user_text}],
+            tools=[submit_tool],
+            tool_choice={"type": "function", "function": {"name": "submit_card"}},
+            temperature=0.1, timeout=90,
+        )
+        tokens = getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0
+        calls = resp.choices[0].message.tool_calls or []
+        if calls:
+            try:
+                return json.loads(calls[0].function.arguments or "{}"), tokens
+            except json.JSONDecodeError:
+                return {}, tokens
+    except Exception as exc:
+        print(f"  [agent] forced submit недоступен ({exc.__class__.__name__}) — JSON-режим")
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": ONESHOT_SYSTEM + _ONESHOT_JSON_HINT},
+                      {"role": "user", "content": user_text}],
+            response_format={"type": "json_object"}, temperature=0.1, timeout=90,
+        )
+        tokens = getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0
+        return json.loads(resp.choices[0].message.content or "{}"), tokens
+    except Exception as exc:
+        return None, 0
+
+
+def _run_oneshot(client, model: str, tender: dict[str, Any], store: DocStore, deadline: float,
+                 on_step: Callable[..., None] | None = None, evidence_digest: str = "") -> dict[str, Any]:
+    """Один вызов: модель видит собранный текст документов и заполняет карточку (быстро,
+    1 запрос — влезает в rate-limit; качество выше многошаговой петли)."""
+    _emit_text(on_step, "извлекает карточку (one-shot)…", step_count=0, tool_calls=0, tokens=0)
+    card, tokens = _submit_extract(client, model, _oneshot_user(tender, store, evidence_digest))
+    if card is None:
+        return _result("error", None, [], 0, 0, False) | {"error": "извлечение не удалось"}
+    steps = [{"idx": 1, "kind": "final", "thought": "", "tool": "submit_card",
+              "args": {}, "observation": "Карточка извлечена (one-shot)"}]
+    _emit(on_step, "submit_card", {}, store, step_count=1, tool_calls=1, tokens=tokens)
+    return _result("done", card, steps, 1, tokens, False)
+
+
+# Имена-подсказки: документы, где обычно лежат факты карточки (для видимого чтения)
+_READ_PRIORITY = ["контракт", "техническ", " тз", "тз ", "задание", "обоснован", "нмц",
+                  "извещен", "требован", "спецификац", "услов"]
+
+
+def _pick_docs_to_read(store: DocStore, max_docs: int = 6) -> list[int]:
+    """Выбирает документы для чтения: сперва ключевые по имени (контракт/ТЗ/обоснование…),
+    затем остальные по порядку. Детерминированно — без зацикливания модели."""
+    def score(i: int) -> int:
+        name = lower_text(store.docs[i]["filename"])
+        return sum(1 for k in _READ_PRIORITY if k in name)
+    order = sorted(range(len(store.docs)), key=lambda i: (-score(i), i))
+    return order[:max_docs]
+
+
+def _run_guided(client, model: str, tender: dict[str, Any], store: DocStore, deadline: float,
+                on_step: Callable[..., None] | None = None, evidence_digest: str = "") -> dict[str, Any]:
+    """Видимое чтение документов + сильное извлечение одним вызовом.
+
+    Детерминированно читает ключевые документы (трейс показывает «читает X» — наглядная
+    демонстрация работы с приложенными файлами), затем делает один submit_card по
+    прочитанному тексту → one-shot-качество. LLM-вызов один (быстро, влезает в rate-limit),
+    но в отличие от one-shot процесс чтения документов виден в трейсе.
+    """
+    steps: list[dict[str, Any]] = []
+    _emit(on_step, "list_documents", {}, store, step_count=0, tool_calls=0, tokens=0)
+    steps.append({"idx": 1, "kind": "tool", "thought": "", "tool": "list_documents",
+                  "args": {}, "observation": store.list()})
+
+    read_parts: list[str] = []
+    total = 0
+    per_doc = max(4_000, ONESHOT_TEXT_BUDGET // max(1, min(len(store.docs), 6)))
+    for n in _pick_docs_to_read(store):
+        if total >= ONESHOT_TEXT_BUDGET:
+            break
+        piece = (store.docs[n]["text"] or "")[:per_doc]
+        if not piece.strip():
+            continue
+        fname = store.docs[n]["filename"]
+        _emit(on_step, "read_document", {"n": n}, store,
+              step_count=len(steps), tool_calls=len(steps), tokens=0)
+        steps.append({"idx": len(steps) + 1, "kind": "tool", "thought": "",
+                      "tool": "read_document", "args": {"n": n},
+                      "observation": f"[{n}] {fname} · {len(store.docs[n]['text'])} симв.\n"
+                                     f"{re.sub(r'\\s+', ' ', piece[:600])}…"})
+        read_parts.append(f"# {fname}\n{piece}")
+        total += len(piece)
+
+    assembled = "\n\n".join(read_parts) or "(документы без распознанного текста)"
+    _emit_text(on_step, "формирует карточку…", step_count=len(steps),
+               tool_calls=len(steps), tokens=0)
+    user = f"{_meta_block(tender, evidence_digest)}\nПРОЧИТАННЫЕ ДОКУМЕНТЫ:\n{assembled}"
+    card, tokens = _submit_extract(client, model, user)
+    if card is None:
+        return _result("error", None, steps, len(steps), 0, False) | {"error": "извлечение не удалось"}
+    steps.append({"idx": len(steps) + 1, "kind": "final", "thought": "", "tool": "submit_card",
+                  "args": {}, "observation": "Карточка извлечена из прочитанных документов"})
+    tool_calls = len(steps)
+    _emit(on_step, "submit_card", {}, store, step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
+    return _result("done", card, steps, tool_calls, tokens, False)
 
 
 # ── Нативная петля (function-calling) ──────────────────────────────────────
 
 def _run_native(client, model: str, tender: dict[str, Any], store: DocStore, deadline: float,
-                on_step: Callable[[str], None] | None = None) -> dict[str, Any]:
+                on_step: Callable[..., None] | None = None, evidence_digest: str = "") -> dict[str, Any]:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": _card_metadata(tender)},
+        {"role": "user", "content": _card_metadata(tender, evidence_digest)},
     ]
     steps: list[dict[str, Any]] = []
     tool_calls = 0
@@ -388,9 +622,12 @@ def _run_native(client, model: str, tender: dict[str, Any], store: DocStore, dea
         if time.monotonic() > deadline:
             limit_reached = True
             break
+        # «обращается к модели…» — чтобы долгое ожидание ответа шлюза было видно (не «завис»)
+        _emit_text(on_step, "обращается к модели…",
+                   step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
         resp = client.chat.completions.create(
             model=model, messages=messages, tools=_TOOLS,
-            tool_choice="auto", temperature=0.1, timeout=45,
+            tool_choice="auto", temperature=0.1, timeout=40,
         )
         tokens += getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0
         msg = resp.choices[0].message
@@ -426,14 +663,16 @@ def _run_native(client, model: str, tender: dict[str, Any], store: DocStore, dea
 
             if name == "submit_card":
                 raw_card = args
-                _emit(on_step, "submit_card", {}, store)
+                _emit(on_step, "submit_card", {}, store,
+                      step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
                 steps.append({"idx": len(steps) + 1, "kind": "final", "thought": thought,
                               "tool": "submit_card", "args": {}, "observation": "Карточка сформирована"})
                 messages.append({"role": "tool", "tool_call_id": c.id, "content": "ok"})
                 done = True
                 continue
 
-            _emit(on_step, name, args, store)
+            _emit(on_step, name, args, store,
+                  step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
             observation = _exec_tool(name, args, store)
             steps.append({"idx": len(steps) + 1, "kind": "tool",
                           "thought": thought if not steps or steps[-1].get("thought") != thought else "",
@@ -456,7 +695,7 @@ def _finalize_partial(client, model, messages, steps, store, tool_calls, tokens,
         resp = client.chat.completions.create(
             model=model, messages=messages, tools=_TOOLS,
             tool_choice={"type": "function", "function": {"name": "submit_card"}},
-            temperature=0.1, timeout=45,
+            temperature=0.1, timeout=40,
         )
         tokens += getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0
         calls = resp.choices[0].message.tool_calls or []
@@ -482,10 +721,10 @@ _FALLBACK_SYSTEM = (
 
 
 def _run_fallback(client, model: str, tender: dict[str, Any], store: DocStore, deadline: float,
-                  on_step: Callable[[str], None] | None = None) -> dict[str, Any]:
+                  on_step: Callable[..., None] | None = None, evidence_digest: str = "") -> dict[str, Any]:
     messages = [
         {"role": "system", "content": _FALLBACK_SYSTEM},
-        {"role": "user", "content": _card_metadata(tender)},
+        {"role": "user", "content": _card_metadata(tender, evidence_digest)},
     ]
     steps: list[dict[str, Any]] = []
     tool_calls = 0
@@ -496,9 +735,11 @@ def _run_fallback(client, model: str, tender: dict[str, Any], store: DocStore, d
         if time.monotonic() > deadline:
             limit_reached = True
             break
+        _emit_text(on_step, "обращается к модели…",
+                   step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
         resp = client.chat.completions.create(
             model=model, messages=messages,
-            response_format={"type": "json_object"}, temperature=0.1, timeout=45,
+            response_format={"type": "json_object"}, temperature=0.1, timeout=40,
         )
         tokens += getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0
         content = resp.choices[0].message.content or "{}"
@@ -511,7 +752,8 @@ def _run_fallback(client, model: str, tender: dict[str, Any], store: DocStore, d
 
         thought = str(data.get("thought", "") or "").strip()
         if "submit_card" in data:
-            _emit(on_step, "submit_card", {}, store)
+            _emit(on_step, "submit_card", {}, store,
+                  step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
             steps.append({"idx": len(steps) + 1, "kind": "final", "thought": thought,
                           "tool": "submit_card", "args": {}, "observation": "Карточка сформирована"})
             return _result("done", data.get("submit_card") or {}, steps, tool_calls, tokens, False)
@@ -522,7 +764,8 @@ def _run_fallback(client, model: str, tender: dict[str, Any], store: DocStore, d
             messages.append({"role": "user", "content": "Укажи action или submit_card."})
             continue
         tool_calls += 1
-        _emit(on_step, action, action_input, store)
+        _emit(on_step, action, action_input, store,
+              step_count=len(steps), tool_calls=tool_calls, tokens=tokens)
         observation = _exec_tool(action, action_input, store)
         steps.append({"idx": len(steps) + 1, "kind": "tool", "thought": thought,
                       "tool": action, "args": action_input, "observation": observation})
@@ -536,7 +779,7 @@ def _run_fallback(client, model: str, tender: dict[str, Any], store: DocStore, d
                          "Достигнут лимит. Ответь JSON с ключом submit_card — карточкой из собранного."})
         resp = client.chat.completions.create(
             model=model, messages=messages,
-            response_format={"type": "json_object"}, temperature=0.1, timeout=45,
+            response_format={"type": "json_object"}, temperature=0.1, timeout=40,
         )
         tokens += getattr(getattr(resp, "usage", None), "total_tokens", 0) or 0
         data = json.loads(resp.choices[0].message.content or "{}")
@@ -571,28 +814,25 @@ def is_configured() -> bool:
 
 
 def _client():
-    base_url = os.environ.get("RMR_GATEWAY_URL")
-    api_key = os.environ.get("RMR_API_KEY")
-    if not base_url or not api_key:
-        return None
-    try:
-        from openai import OpenAI
-    except Exception:
-        return None
-    return OpenAI(base_url=base_url, api_key=api_key)
+    # Клиент активного провайдера (RMR/OpenRouter) — см. ai.active_config / AI_PROVIDER.
+    # timeout=40 на попытку бьёт по зависанию; max_retries=2 (экспон. бэкофф SDK) переживает
+    # 429 rate-limit. Для one-shot вызова поднимаем timeout отдельно (см. _run_oneshot).
+    return ai.build_client(max_retries=2, timeout=40)
 
 
 def run_agent(
     tender: dict[str, Any],
     documents: list[dict[str, Any]],
     model: str | None = None,
-    on_step: Callable[[str], None] | None = None,
+    on_step: Callable[..., None] | None = None,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Прогоняет ReAct-агента по комплекту документов тендера.
 
     documents: [{filename, text}]. on_step(text) — колбэк живого прогресса (текущий шаг).
-    Возвращает dict с card/steps/метриками (см. _result). При недоступности шлюза —
-    status='error', card=None (analyzer деградирует на правила).
+    evidence: список улик из rules.collect_evidence для фронт-загрузки (стартовые
+    фрагменты, чтобы агент сходился быстрее). Возвращает dict с card/steps/метриками
+    (см. _result). При недоступности шлюза — status='error', card=None.
     """
     global _NATIVE_TOOLS
     client = _client()
@@ -602,12 +842,23 @@ def run_agent(
     model = model or ai.MODEL
     store = DocStore(documents)
     deadline = time.monotonic() + TENDER_TIMEOUT
+    evidence_digest = _evidence_digest(evidence)
+
+    # Прямые режимы (без модельной петли): oneshot — один вызов по всему тексту;
+    # guided — видимое чтение ключевых документов + один вызов извлечения.
+    mode = _agent_mode()
+    if mode in ("oneshot", "guided"):
+        runner = _run_guided if mode == "guided" else _run_oneshot
+        try:
+            return runner(client, model, tender, store, deadline, on_step, evidence_digest)
+        except Exception as exc:
+            return _result("error", None, [], 0, 0, False) | {"error": f"{exc.__class__.__name__}: {exc}"}
 
     # Выбор режима: пробуем нативные tools, при сбое первого вызова — фолбэк (запоминаем).
     if _NATIVE_TOOLS is False:
-        return _run_fallback(client, model, tender, store, deadline, on_step)
+        return _run_fallback(client, model, tender, store, deadline, on_step, evidence_digest)
     try:
-        result = _run_native(client, model, tender, store, deadline, on_step)
+        result = _run_native(client, model, tender, store, deadline, on_step, evidence_digest)
         _NATIVE_TOOLS = True
         return result
     except Exception as exc:
@@ -615,7 +866,7 @@ def run_agent(
             _NATIVE_TOOLS = False
             print(f"  [agent] нативные tools недоступны ({exc.__class__.__name__}) — фолбэк на JSON-action")
             try:
-                return _run_fallback(client, model, tender, store, deadline, on_step)
+                return _run_fallback(client, model, tender, store, deadline, on_step, evidence_digest)
             except Exception as exc2:
                 return _result("error", None, [], 0, 0, False) | {"error": f"{exc2.__class__.__name__}: {exc2}"}
         return _result("error", None, [], 0, 0, False) | {"error": f"{exc.__class__.__name__}: {exc}"}

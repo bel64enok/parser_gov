@@ -186,10 +186,21 @@ def analysis_payload() -> dict[str, Any]:
                 t = conn.execute(
                     "SELECT title FROM tenders WHERE number=?", (running["tender_number"],)
                 ).fetchone()
+                elapsed = None
+                started = running["started_at"]
+                if started:
+                    try:
+                        elapsed = max(0, int((datetime.now() - datetime.fromisoformat(started)).total_seconds()))
+                    except (ValueError, TypeError):
+                        elapsed = None
                 current = {
                     "tender_number": running["tender_number"],
                     "tender_title": (t["title"] if t else "") or running["tender_number"],
                     "step": running["current_step"] or "",
+                    "step_count": running["step_count"] or 0,
+                    "tool_calls": running["tool_calls"] or 0,
+                    "tokens": running["tokens"] or 0,
+                    "elapsed_sec": elapsed,
                 }
         agg = conn.execute(
             "SELECT COUNT(*) AS total, SUM(status='done') AS done, "
@@ -198,8 +209,8 @@ def analysis_payload() -> dict[str, Any]:
     finally:
         conn.close()
 
-    gateway_url = os.environ.get("RMR_GATEWAY_URL", "")
-    gateway_host = urllib.parse.urlparse(gateway_url).hostname or "" if gateway_url else ""
+    cfg = agent_module.ai.active_config()
+    gateway_host = urllib.parse.urlparse(cfg["base_url"]).hostname or "" if cfg["base_url"] else ""
 
     return {
         "active_run": active,
@@ -208,6 +219,8 @@ def analysis_payload() -> dict[str, Any]:
             "pending": status.get("pending", 0),
             "analyzed": status.get("analyzed", 0),
             "error": status.get("error", 0),
+            "awaiting": status.get("awaiting", 0),
+            "with_card": status.get("with_card", 0),
         },
         "summary": {
             "agent_runs": agg["total"] or 0,
@@ -217,8 +230,9 @@ def analysis_payload() -> dict[str, Any]:
         },
         "ai": {
             "enabled": agent_module.is_configured(),
-            "model": agent_module.MODEL,
+            "model": cfg["model"],
             "gateway": gateway_host,
+            "provider": cfg["provider"],
         },
         "runs": runs,
         "cron_note": "Полный пайплайн (сбор + анализ) запускается по cron раз в час",

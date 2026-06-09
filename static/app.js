@@ -8,6 +8,8 @@ const state = {
   currentPage: 1,
   pageSize: 6,
   filters: { dateFrom: '', dateTo: '', query: '' },
+  downloadedCount: 0, // всего скачано (для обучающего пустого состояния)
+  awaitingCount: 0, // скачано, но без карточки ИИ-агента
 };
 
 const fmtRub = new Intl.NumberFormat('ru-RU', {
@@ -220,14 +222,56 @@ function renderPagination(totalItems) {
   `;
 }
 
+// Обучающее пустое состояние: разное сообщение под причину пустоты, с конкретным
+// следующим шагом (онбординг через empty state, а не «ничего нет»).
+function emptyStateHtml() {
+  const tagsFiltered = state.tenders.length > 0; // карточки есть, но скрыты фильтром тегов
+  if (tagsFiltered) {
+    return `
+      <div class="empty-state">
+        <h3 class="empty-state__title">По выбранным тегам ничего не найдено</h3>
+        <p class="empty-state__text">Карточки есть, но ни одна не подходит под текущую комбинацию тегов.</p>
+        <button type="button" class="btn btn--ghost" id="emptyResetTags">Сбросить теги</button>
+      </div>`;
+  }
+  if (state.downloadedCount === 0) {
+    return `
+      <div class="empty-state">
+        <h3 class="empty-state__title">Пока не загружено ни одного тендера</h3>
+        <p class="empty-state__text">Сбор подтягивает закупки из ЕИС и скачивает документы. Запустите его, чтобы наполнить реестр.</p>
+        <a class="btn btn--primary" href="/crawler.html">Перейти к сбору →</a>
+      </div>`;
+  }
+  if (state.awaitingCount > 0) {
+    const n = state.awaitingCount;
+    return `
+      <div class="empty-state">
+        <h3 class="empty-state__title">${n} ${pluralTenders(n)} ждут ИИ-анализа</h3>
+        <p class="empty-state__text">Документы скачаны, но агент ещё не разобрал их на структурированные карточки. После анализа тендеры появятся здесь, отранжированные по потенциалу.</p>
+        <a class="btn btn--primary" href="/analysis.html">Запустить ИИ-анализ →</a>
+      </div>`;
+  }
+  return `
+    <div class="empty-state">
+      <h3 class="empty-state__title">Нет тендеров, прошедших ИИ-анализ</h3>
+      <p class="empty-state__text">Запустите анализ очереди, чтобы получить структурированные карточки.</p>
+      <a class="btn btn--primary" href="/analysis.html">Открыть ИИ-анализ →</a>
+    </div>`;
+}
+
+function pluralTenders(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'тендер';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'тендера';
+  return 'тендеров';
+}
+
 function renderTenders() {
   const items = filteredTendersByTags();
   const container = byId('tenderList');
   if (!items.length) {
-    const storeEmpty = state.tenders.length === 0;
-    container.innerHTML = storeEmpty
-      ? '<div class="empty">Пока нет тендеров, прошедших ИИ-анализ. Запустите анализ на вкладке <a href="/analysis.html">«ИИ-анализ»</a>.</div>'
-      : '<div class="loading">По выбранным тегам карточки не найдены. Сбросьте теги или выберите другую комбинацию.</div>';
+    container.innerHTML = emptyStateHtml();
     byId('resultNote').textContent = `0 из ${state.tenders.length} карточек`;
     renderPagination(0);
     return;
@@ -480,6 +524,8 @@ async function loadTenders() {
     const response = await fetch(`/api/tenders?${params.toString()}`, { cache: 'no-store' });
     const payload = await response.json();
     state.tenders = payload.items || [];
+    state.downloadedCount = payload.downloaded_count || 0;
+    state.awaitingCount = payload.awaiting_count || 0;
     state.sourceUrl = payload.source_url;
     state.selectedTags = new Set([...state.selectedTags].filter((tag) => allAvailableTags().includes(tag)));
     state.currentPage = 1;
@@ -531,7 +577,7 @@ document.addEventListener('click', (event) => {
     renderTenders();
     return;
   }
-  if (event.target.closest('#resetTags')) {
+  if (event.target.closest('#resetTags') || event.target.closest('#emptyResetTags')) {
     state.selectedTags.clear();
     state.currentPage = 1;
     renderTagFilters();

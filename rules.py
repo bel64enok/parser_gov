@@ -261,6 +261,53 @@ def evidence_snippet(text: str, term: str, radius: int = 150) -> str:
     return re.sub(r"\s+", " ", snippet)
 
 
+def _query_stems(query: str) -> list[tuple[str, str]]:
+    """Токенизирует запрос и грубо нормализует под русскую морфологию.
+
+    Возвращает [(токен, корень)]. «Корень» = токен без 1–2 последних символов
+    (но не короче 4), чтобы 'обеспечение' матчило 'обеспечения/обеспечению', а
+    'объём' → 'объе'. Короткие/служебные токены (<3 симв.) отбрасываем.
+    """
+    stems: list[tuple[str, str]] = []
+    for tok in re.findall(r"[a-zа-я0-9]+", lower_text(query)):
+        if len(tok) < 3:
+            continue
+        stem = tok if len(tok) <= 4 else tok[:-2]
+        if len(stem) < 4:
+            stem = tok[:4]
+        stems.append((tok, stem))
+    return stems
+
+
+def search_snippets(text: str, query: str, radius: int = 180, max_snippets: int = 2) -> tuple[int, list[str]]:
+    """Морфолого-толерантный поиск по одному документу.
+
+    Токенизирует запрос и ищет КАЖДЫЙ токен по его корню (подстрока), а не всю
+    фразу целиком — поэтому 'обеспечение контракта' находит 'обеспечение
+    исполнения контракта'. Возвращает (score, snippets): score = число совпавших
+    токенов запроса (для ранжирования документов), snippets — фрагменты вокруг
+    найденных корней.
+    """
+    stems = _query_stems(query)
+    if not stems:
+        return 0, []
+    low = lower_text(text)
+    matched: set[str] = set()
+    snippets: list[str] = []
+    for tok, stem in stems:
+        idx = low.find(stem)
+        if idx < 0:
+            continue
+        matched.add(tok)
+        if len(snippets) < max_snippets:
+            start = max(0, idx - radius)
+            end = min(len(text), idx + len(stem) + radius)
+            snippet = re.sub(r"\s+", " ", text[start:end].strip())
+            if snippet and snippet not in snippets:
+                snippets.append(snippet)
+    return len(matched), snippets
+
+
 def collect_evidence(tender: dict[str, Any], document_text: str) -> list[dict[str, str]]:
     evidence: list[EvidenceItem] = []
     seen: set[tuple[str, str, str]] = set()

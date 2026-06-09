@@ -336,6 +336,21 @@ def tenders_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row
     ).fetchall()
 
 
+def tenders_awaiting_agent(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Тендеры, которым ещё нужна карточка ИИ-агента (agent_card_json IS NULL).
+
+    Покрывает три случая: только что скачанные (нет строки analysis), rules-only и
+    упавшие прогоны агента (карточки нет). Это и есть «очередь» при настроенном шлюзе —
+    идемпотентно: как только тендер получает карточку, он покидает набор.
+    """
+    return conn.execute(
+        "SELECT t.* FROM tenders t "
+        "LEFT JOIN analysis a ON a.tender_number = t.number "
+        "WHERE a.agent_card_json IS NULL "
+        "ORDER BY t.fetched_at"
+    ).fetchall()
+
+
 def tender_exists(conn: sqlite3.Connection, number: str) -> bool:
     row = conn.execute("SELECT 1 FROM tenders WHERE number=?", (number,)).fetchone()
     return row is not None
@@ -443,6 +458,24 @@ def set_agent_current_step(agent_run_id: int, text: str) -> None:
     conn = connect()
     try:
         conn.execute("UPDATE agent_runs SET current_step=? WHERE id=?", (text[:200], agent_run_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_agent_progress(agent_run_id: int, *, step_count: int, tool_calls: int,
+                          tokens: int, current_step: str) -> None:
+    """Живой прогресс агента: пишет метрики ПО ХОДУ прогона (не только в finish_agent_run).
+    Открывает короткое собственное соединение — вызывается из воркер-треда на каждом шаге.
+    Без этого UI показывал бы «0 вызовов, 0 токенов» на работающем тендере."""
+    if not agent_run_id:
+        return
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE agent_runs SET step_count=?, tool_calls=?, tokens=?, current_step=? WHERE id=?",
+            (step_count, tool_calls, tokens, current_step[:200], agent_run_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -587,14 +620,32 @@ def query_tenders(filters: dict[str, Any]) -> dict[str, Any]:
         has_real = conn.execute(
             "SELECT 1 FROM tenders WHERE source='zakupki.gov.ru' LIMIT 1"
         ).fetchone()
+        # счётчики для обучающего пустого состояния «Тендеров»: сколько всего скачано
+        # и сколько ещё ждёт карточки ИИ-агента (agent_card_json IS NULL).
+        downloaded_count = conn.execute("SELECT COUNT(*) AS n FROM tenders").fetchone()["n"]
+        awaiting_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM tenders t "
+            "LEFT JOIN analysis a ON a.tender_number = t.number "
+            "WHERE a.agent_card_json IS NULL"
+        ).fetchone()["n"]
+        if items:
+            error = ""
+        elif downloaded_count == 0:
+            error = "Пока не загружено ни одного тендера — запустите сбор на вкладке «Сбор»."
+        elif awaiting_count:
+            error = f"{awaiting_count} тендеров загружены, но ещё не прошли ИИ-анализ — запустите его на вкладке «ИИ-анализ»."
+        else:
+            error = "Нет тендеров, прошедших ИИ-анализ — запустите анализ на вкладке «ИИ-анализ»."
         return {
             "items": items,
             "source": "zakupki.gov.ru" if has_real else "fallback",
             "source_url": "https://zakupki.gov.ru/epz/order/extendedsearch/results.html",
-            "error": "" if items else "Нет тендеров, прошедших ИИ-анализ — запустите анализ на вкладке «ИИ-анализ».",
+            "error": error,
             "query": filters.get("query", ""),
             "parsed_at": last_run or "",
             "live_count": len(items),
+            "downloaded_count": downloaded_count,
+            "awaiting_count": awaiting_count,
         }
     finally:
         conn.close()
@@ -618,6 +669,15 @@ def pipeline_status() -> dict[str, Any]:
         last_analyzed = conn.execute(
             "SELECT MAX(analyzed_at) AS ts FROM analysis"
         ).fetchone()["ts"]
+        # «Очередь ИИ» считается по наличию карточки агента, а не по pipeline_status:
+        # тендер без карточки ждёт агента, с карточкой — уже разобран.
+        cards = conn.execute(
+            "SELECT "
+            "SUM(a.tender_number IS NOT NULL AND a.agent_card_json IS NOT NULL) AS with_card "
+            "FROM tenders t LEFT JOIN analysis a ON a.tender_number = t.number"
+        ).fetchone()
+        with_card = cards["with_card"] or 0
+        awaiting = (counts["total"] or 0) - with_card
         docs_total = conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
         has_real = conn.execute(
             "SELECT 1 FROM tenders WHERE source='zakupki.gov.ru' LIMIT 1"
@@ -632,6 +692,8 @@ def pipeline_status() -> dict[str, Any]:
             "pending":          counts["pending"] or 0,
             "analyzed":         counts["analyzed"] or 0,
             "error":            counts["error"] or 0,
+            "awaiting":         awaiting,
+            "with_card":        with_card,
             "last_fetched_at":  counts["last_fetched_at"] or "",
             "last_analyzed_at": last_analyzed or "",
             "source":           "zakupki.gov.ru" if has_real else "fallback",

@@ -130,7 +130,7 @@ async function loadOverview() {
   }
   renderGateway(data.ai || {});
   renderQueue(data.queue || {}, data.summary || {});
-  renderControl(data.active_run, data.current, data.cron_note, data.ai || {});
+  renderControl(data.active_run, data.current, data.cron_note, data.ai || {}, data.queue || {});
   renderRuns(data.runs || []);
   scheduleNextPoll(Boolean(data.active_run));
 
@@ -162,27 +162,39 @@ function renderGateway(ai) {
 }
 
 function renderQueue(queue, summary) {
+  const awaiting = queue.awaiting || 0;
   byId('queueLine').innerHTML =
-    `<strong>${queue.pending || 0}</strong> в очереди · ` +
-    `<strong>${queue.analyzed || 0}</strong> проанализировано · ` +
+    `<strong>${awaiting}</strong> ожидают ИИ-анализа · ` +
+    `<strong>${queue.with_card || 0}</strong> проанализировано · ` +
     `<strong class="${queue.error ? 'analysis-q-err' : ''}">${queue.error || 0}</strong> ошибок`;
   byId('analysisSummary').textContent =
     `Прогонов агента: ${summary.agent_runs || 0} · готово: ${summary.done || 0}` +
     ` · с лимитом: ${summary.partial || 0} · ошибок: ${summary.error || 0}`;
 }
 
-function renderControl(activeRun, current, cronNote, ai) {
+function renderControl(activeRun, current, cronNote, ai, queue) {
   state.activeRunId = activeRun ? activeRun.id : null;
   const progress = byId('analyzeProgress');
   const startBtn = byId('analyzeStart');
+  const awaiting = (queue && queue.awaiting) || 0;
   byId('analyzeHint').textContent =
     cronNote || 'Агент читает документы из очереди и извлекает требования с цитатами.';
 
   if (!activeRun) {
     progress.hidden = true;
-    startBtn.disabled = !ai.enabled;
-    startBtn.textContent = ai.enabled ? 'Запустить анализ' : 'Шлюз не настроен';
-    startBtn.title = ai.enabled ? '' : 'Заполните RMR_GATEWAY_URL и RMR_API_KEY';
+    if (!ai.enabled) {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Шлюз не настроен';
+      startBtn.title = 'Заполните RMR_GATEWAY_URL и RMR_API_KEY';
+    } else if (awaiting === 0) {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Нет тендеров для анализа';
+      startBtn.title = 'Все скачанные тендеры уже разобраны агентом';
+    } else {
+      startBtn.disabled = false;
+      startBtn.textContent = `Запустить анализ (${awaiting})`;
+      startBtn.title = '';
+    }
     return;
   }
 
@@ -194,8 +206,18 @@ function renderControl(activeRun, current, cronNote, ai) {
   const done = activeRun.tenders_done || 0;
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : done > 0 ? 100 : 6;
   const isAnalyze = activeRun.kind === 'analyze' || activeRun.kind === 'pipeline';
+
+  // Живые метрики агента по текущему тендеру (шаг/вызовы/токены/таймер)
+  const metrics = [];
+  if (current) {
+    if (current.step_count != null) metrics.push(`шаг ${current.step_count}`);
+    if (current.tool_calls != null) metrics.push(`${current.tool_calls} выз.`);
+    if (current.tokens) metrics.push(`${fmtTokens(current.tokens)} ток.`);
+    if (current.elapsed_sec != null) metrics.push(`⏱ ${fmtElapsed(current.elapsed_sec)}`);
+  }
+  const metricsSuffix = isAnalyze && metrics.length ? ` · ${metrics.join(' · ')}` : '';
   byId('progressLabel').textContent = isAnalyze
-    ? `Идёт анализ · тендер ${done}/${total}`
+    ? `Идёт анализ · тендер ${done}/${total}${metricsSuffix}`
     : `Идёт сбор · тендер ${done}/${total}`;
 
   if (current && (current.step || current.tender_title)) {
@@ -205,6 +227,15 @@ function renderControl(activeRun, current, cronNote, ai) {
     byId('progressStep').textContent = '';
   }
   byId('progressFill').style.width = `${pct}%`;
+}
+
+function fmtElapsed(sec) {
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function fmtTokens(n) {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
 function renderRuns(runs) {

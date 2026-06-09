@@ -430,6 +430,23 @@ button:hover {
   white-space: nowrap;
 }
 
+.admin-table__num {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.admin-table__num code {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Запуск без фильтра по теме — режим «последние», а не буквальный запрос */
+.run-query--latest {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .admin-sub {
   color: var(--muted);
   font-size: 11px;
@@ -1137,6 +1154,14 @@ mark {
 
 .crawl-field--limit {
   flex: 0 0 110px;
+}
+
+.crawl-field__note {
+  margin-left: 4px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: none;
 }
 
 .crawl-field input {

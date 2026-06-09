@@ -57,6 +57,11 @@ function stageLabel(run) {
   return 'полный';
 }
 
+// Пустой запрос = сбор «последних» без фильтра по теме.
+function queryText(run) {
+  return String(run.query ?? '').trim();
+}
+
 const DOC_STATUS = {
   ok: { dot: 'dot-ok', label: 'скачан' },
   unpacked: { dot: 'dot-ok', label: 'распакован' },
@@ -105,7 +110,7 @@ async function loadOverview() {
     data = await getJson('/api/crawler');
   } catch {
     byId('runsBody').innerHTML =
-      '<tr><td colspan="9" class="admin-empty">Не удалось загрузить данные</td></tr>';
+      '<tr><td colspan="10" class="admin-empty">Не удалось загрузить данные</td></tr>';
     return;
   }
   renderControl(data.active_run, data.cron_note);
@@ -162,25 +167,27 @@ function renderRuns(runs) {
   byId('runsCount').textContent = runs.length ? `${runs.length} последних` : '';
   if (!runs.length) {
     body.innerHTML =
-      '<tr><td colspan="9" class="admin-empty">Запусков ещё не было. Введите запрос и нажмите «Запустить сбор».</td></tr>';
+      '<tr><td colspan="10" class="admin-empty">Запусков ещё не было. Нажмите «Запустить сбор».</td></tr>';
     return;
   }
   body.innerHTML = runs
     .map((r) => {
-      const tenders = r.status === 'running'
-        ? `${r.tenders_done || 0}/${r.tenders_total || 0}`
-        : `${r.tenders_done || r.fetched_new || 0}`;
       const failed = r.files_failed || 0;
       const failedCell = failed
         ? `<span class="admin-sub admin-sub--err">${failed}</span>`
         : '0';
+      const q = queryText(r);
+      const queryCell = q
+        ? `<td class="admin-table__query" title="${escapeHtml(q)}">${escapeHtml(q)}</td>`
+        : '<td class="admin-table__query run-query--latest" title="последние опубликованные">последние</td>';
       return `
       <tr class="run-row" data-run="${r.id}" tabindex="0" role="button" aria-label="Открыть запуск ${r.id}">
+        <td class="admin-table__num"><code>#${r.id}</code></td>
         <td>${runStatusBadge(r.status)}</td>
         <td><span class="tag">${kindLabel(r)}</span></td>
         <td>${escapeHtml(stageLabel(r))}</td>
-        <td class="admin-table__query" title="${escapeHtml(r.query || '')}">${escapeHtml(r.query || '—')}</td>
-        <td>${tenders}</td>
+        ${queryCell}
+        <td>${tendersCell(r)}</td>
         <td>${r.files_downloaded || 0}</td>
         <td>${failedCell}</td>
         <td>${fmtDuration(r.duration_sec)}</td>
@@ -188,6 +195,21 @@ function renderRuns(runs) {
       </tr>`;
     })
     .join('');
+}
+
+// «Тендеров» в списке. Бегущий прогон — прогресс done/total; завершённый — добавленные
+// (fetched_new) с пояснением, сколько уже было в базе (fetched_skipped). Эти «новые» = ровно
+// те тендеры, что показывает деталь запуска (Модель 2), поэтому список и деталь сходятся.
+function tendersCell(r) {
+  if (r.status === 'running') {
+    return `${r.tenders_done || 0}/${r.tenders_total || 0}`;
+  }
+  const fresh = r.fetched_new || 0;
+  const skipped = r.fetched_skipped || 0;
+  if (skipped > 0) {
+    return `${fresh} <span class="admin-sub">новых · ${skipped} были</span>`;
+  }
+  return `${fresh}`;
 }
 
 // ── Деталь прогона ───────────────────────────────────────────────────────
@@ -212,11 +234,23 @@ async function loadRun(runId, opts = {}) {
 function renderRunDetail(data) {
   const run = data.run || {};
   const tenders = data.tenders || [];
+  const totals = data.totals || {};
   byId('runTitle').textContent = `Запуск #${run.id ?? '—'} · ${kindLabel(run)} · ${stageLabel(run)}`;
+
+  const q = queryText(run);
+  const queryPart = q ? `запрос «${q}»` : 'последние опубликованные';
+  // Объясняем «запросил N — добавил X»: новых = строк ниже, уже в базе = пропущено как дубли.
+  let originPart;
+  if (run.status === 'running') {
+    originPart = `тендер ${run.tenders_done || 0}/${run.tenders_total || 0}`;
+  } else {
+    originPart = `новых ${run.fetched_new || 0}`;
+    if ((run.fetched_skipped || 0) > 0) originPart += ` · уже в базе ${run.fetched_skipped}`;
+  }
   byId('runMeta').textContent =
-    `${runStatusText(run.status)} · запрос «${run.query || '—'}» · начат ${fmtTs(run.started_at)}` +
-    ` · скачано ${run.files_downloaded || 0} · распаковано ${run.files_unpacked || 0}` +
-    ` · упало ${run.files_failed || 0}`;
+    `${runStatusText(run.status)} · ${queryPart} · начат ${fmtTs(run.started_at)} · ${originPart}` +
+    ` · скачано ${totals.downloaded || 0} · распаковано ${totals.unpacked || 0}` +
+    ` · упало ${totals.failed || 0}`;
 
   const totalFailed = tenders.reduce((acc, t) => acc + (t.files_failed || 0), 0);
   const retryBtn = byId('retryRunBtn');
@@ -230,8 +264,13 @@ function renderRunDetail(data) {
 
   const body = byId('runTendersBody');
   if (!tenders.length) {
-    body.innerHTML =
-      '<tr><td colspan="6" class="admin-empty">У этого запуска нет связанных тендеров (старый запуск до обновления).</td></tr>';
+    // Деталь = только новые тендеры. Пусто = либо все из выдачи уже были в базе
+    // (повторный сбор), либо старый запуск без привязки run_id.
+    const allSkipped = (run.fetched_new || 0) === 0 && (run.fetched_skipped || 0) > 0;
+    const msg = allSkipped
+      ? `Новых тендеров нет — все ${run.fetched_skipped} из выдачи уже были в базе.`
+      : 'У этого запуска нет связанных тендеров (старый запуск до обновления).';
+    body.innerHTML = `<tr><td colspan="6" class="admin-empty">${msg}</td></tr>`;
     return;
   }
   body.innerHTML = tenders
@@ -243,7 +282,7 @@ function renderRunDetail(data) {
       <tr class="tender-row" data-number="${escapeHtml(t.number)}" tabindex="0" role="button" aria-label="Документы тендера ${escapeHtml(t.number)}">
         <td><code>${escapeHtml(t.number)}</code></td>
         <td class="admin-table__query" title="${escapeHtml(t.title || '')}">${escapeHtml(t.title || '—')}</td>
-        <td>${t.files_total || 0}</td>
+        <td>${t.downloaded || 0}</td>
         <td>${t.unpacked || 0}</td>
         <td>${failedCell}</td>
         <td>${escapeHtml(t.pipeline_status || '—')}</td>
@@ -386,7 +425,8 @@ function renderTree(data) {
 async function startCrawl(event) {
   event.preventDefault();
   if (state.busy || state.activeRunId) return;
-  const query = byId('crawlQuery').value.trim() || 'мобильная связь';
+  // Пусто — сбор последних опубликованных (бэкенд сам сортирует по дате размещения).
+  const query = byId('crawlQuery').value.trim();
   const limit = Math.max(1, Math.min(parseInt(byId('crawlLimit').value, 10) || 10, 50));
   state.busy = true;
   byId('crawlStart').disabled = true;

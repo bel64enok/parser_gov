@@ -221,8 +221,9 @@ def _human(tool: str, args: dict[str, Any], store: "DocStore") -> str:
     if tool == "list_documents":
         return "смотрит список документов"
     if tool == "read_document":
-        n = int(args.get("n", -1)) if str(args.get("n", "")).lstrip("-").isdigit() else -1
-        name = store.docs[n]["filename"] if 0 <= n < len(store.docs) else f"#{args.get('n', '?')}"
+        raw_n = args.get("n", args.get("index", ""))
+        n = int(raw_n) if str(raw_n).lstrip("-").isdigit() else -1
+        name = store.docs[n]["filename"] if 0 <= n < len(store.docs) else f"#{raw_n or '?'}"
         return f"читает {name}"
     if tool == "search_documents":
         return f"ищет «{str(args.get('query', '')).strip()}»"
@@ -342,7 +343,8 @@ def _exec_tool(name: str, args: dict[str, Any], store: DocStore) -> str:
         if name == "list_documents":
             return store.list()
         if name == "read_document":
-            return store.read(int(args.get("n", 0)), int(args.get("chunk", 0) or 0))
+            n = args.get("n", args.get("index", 0))  # модель иногда шлёт index вместо n
+            return store.read(int(n), int(args.get("chunk", 0) or 0))
         if name == "search_documents":
             return store.search(str(args.get("query", "")))
         if name == "lookup_dictionary":

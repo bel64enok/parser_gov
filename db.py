@@ -77,8 +77,30 @@ CREATE TABLE IF NOT EXISTS analysis (
     ai_suggested_domain TEXT,
     ai_confidence       TEXT,
     ai_deadline_note    TEXT,
+    agent_card_json     TEXT,            -- структурированная карточка ReAct-агента (последняя)
     model               TEXT,
     analyzed_at         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    tender_number   TEXT,
+    pipeline_run_id INTEGER,             -- прогон, в котором отработал агент (FK pipeline_runs.id)
+    status          TEXT,                -- running | done | partial | error
+    model           TEXT,
+    domain          TEXT,                -- денормализовано для списка (из карточки)
+    confidence      TEXT,                -- денормализовано для списка
+    step_count      INTEGER DEFAULT 0,
+    tool_calls      INTEGER DEFAULT 0,
+    tokens          INTEGER DEFAULT 0,
+    duration_sec    REAL,
+    limit_reached   INTEGER DEFAULT 0,   -- упёрлись в лимит шагов → частичная карточка
+    error           TEXT DEFAULT '',
+    current_step    TEXT DEFAULT '',     -- человекочитаемый текущий шаг (для живого прогресса)
+    card_json       TEXT,                -- структурированная карточка C
+    steps_json      TEXT,                -- полный ReAct-трейс (массив шагов)
+    started_at      TEXT,
+    finished_at     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -110,6 +132,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 CREATE INDEX IF NOT EXISTS idx_tenders_status ON tenders(pipeline_status);
 CREATE INDEX IF NOT EXISTS idx_tenders_publish ON tenders(publish_date_iso);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON pipeline_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_tender ON agent_runs(tender_number);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_pipeline ON agent_runs(pipeline_run_id);
 """
 
 
@@ -142,8 +166,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_column(conn, "pipeline_runs", "files_unpacked", "INTEGER DEFAULT 0")
     _add_column(conn, "pipeline_runs", "files_failed", "INTEGER DEFAULT 0")
     _add_column(conn, "pipeline_runs", "progress_at", "TEXT")
+    _add_column(conn, "analysis", "agent_card_json", "TEXT")
+    _add_column(conn, "agent_runs", "current_step", "TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_tender ON documents(tender_number)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_tender ON agent_runs(tender_number)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_pipeline ON agent_runs(pipeline_run_id)")
     conn.commit()
 
 
@@ -352,6 +380,117 @@ def save_analysis(conn: sqlite3.Connection, tender_number: str, rules: dict[str,
     conn.commit()
 
 
+# ── Агентные прогоны (ReAct-стадия 2) ─────────────────────────────────────
+
+def create_agent_run(
+    conn: sqlite3.Connection, tender_number: str, pipeline_run_id: int | None, model: str
+) -> int:
+    """Открывает попытку анализа тендера агентом (status='running'). Возвращает id."""
+    cur = conn.execute(
+        "INSERT INTO agent_runs (tender_number, pipeline_run_id, status, model, started_at) "
+        "VALUES (?, ?, 'running', ?, ?)",
+        (tender_number, pipeline_run_id, model, datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def finish_agent_run(
+    conn: sqlite3.Connection,
+    agent_run_id: int,
+    *,
+    status: str,
+    card: dict[str, Any] | None = None,
+    steps: list[dict[str, Any]] | None = None,
+    domain: str = "",
+    confidence: str = "",
+    step_count: int = 0,
+    tool_calls: int = 0,
+    tokens: int = 0,
+    limit_reached: bool = False,
+    error: str = "",
+) -> None:
+    """Закрывает попытку агента: статус, метрики, карточка и трейс (JSON-блобы)."""
+    row = conn.execute("SELECT started_at FROM agent_runs WHERE id=?", (agent_run_id,)).fetchone()
+    finished = datetime.now()
+    duration = None
+    if row and row["started_at"]:
+        try:
+            duration = (finished - datetime.fromisoformat(row["started_at"])).total_seconds()
+        except ValueError:
+            duration = None
+    conn.execute(
+        "UPDATE agent_runs SET status=?, domain=?, confidence=?, step_count=?, tool_calls=?, "
+        "tokens=?, duration_sec=?, limit_reached=?, error=?, card_json=?, steps_json=?, "
+        "finished_at=? WHERE id=?",
+        (
+            status, domain, confidence, step_count, tool_calls, tokens, duration,
+            int(limit_reached), error,
+            json.dumps(card, ensure_ascii=False) if card is not None else None,
+            json.dumps(steps or [], ensure_ascii=False),
+            finished.isoformat(timespec="seconds"),
+            agent_run_id,
+        ),
+    )
+    conn.commit()
+
+
+def set_agent_current_step(agent_run_id: int, text: str) -> None:
+    """Пишет человекочитаемый текущий шаг агента (для живого прогресса). Открывает короткое
+    собственное соединение — вызывается из воркер-треда во время прогона."""
+    if not agent_run_id:
+        return
+    conn = connect()
+    try:
+        conn.execute("UPDATE agent_runs SET current_step=? WHERE id=?", (text[:200], agent_run_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def running_agent_run(conn: sqlite3.Connection, pipeline_run_id: int) -> sqlite3.Row | None:
+    """Текущая выполняющаяся попытка агента в рамках прогона (для живого прогресса)."""
+    return conn.execute(
+        "SELECT * FROM agent_runs WHERE pipeline_run_id=? AND status='running' ORDER BY id DESC LIMIT 1",
+        (pipeline_run_id,),
+    ).fetchone()
+
+
+def save_agent_card(conn: sqlite3.Connection, tender_number: str, card: dict[str, Any] | None) -> None:
+    """Кладёт последнюю карточку агента в analysis (для вкладки «Тендеры»). Строка analysis
+    к этому моменту уже создана save_analysis()."""
+    conn.execute(
+        "UPDATE analysis SET agent_card_json=? WHERE tender_number=?",
+        (json.dumps(card, ensure_ascii=False) if card is not None else None, tender_number),
+    )
+    conn.commit()
+
+
+def latest_agent_run(conn: sqlite3.Connection, tender_number: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM agent_runs WHERE tender_number=? ORDER BY id DESC LIMIT 1",
+        (tender_number,),
+    ).fetchone()
+
+
+def agent_runs_for_tender(conn: sqlite3.Connection, tender_number: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM agent_runs WHERE tender_number=? ORDER BY id DESC", (tender_number,)
+    ).fetchall()
+
+
+def agent_runs_for_pipeline(conn: sqlite3.Connection, pipeline_run_id: int) -> list[sqlite3.Row]:
+    """Последняя попытка агента по каждому тендеру в рамках прогона."""
+    return conn.execute(
+        "SELECT a.* FROM agent_runs a "
+        "JOIN (SELECT tender_number, MAX(id) AS mid FROM agent_runs "
+        "      WHERE pipeline_run_id=? GROUP BY tender_number) last "
+        "  ON a.id = last.mid "
+        "ORDER BY a.id",
+        (pipeline_run_id,),
+    ).fetchall()
+
+
 def _row_to_item(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     """Собирает JSON в форме, которую ожидает фронтенд (items[].analysis, items[].documents)."""
     a = conn.execute(
@@ -383,6 +522,8 @@ def _row_to_item(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "suggested_domain": field("ai_suggested_domain", ""),
         "confidence": field("ai_confidence", ""),
         "deadline_note": field("ai_deadline_note", ""),
+        # структурированная карточка ReAct-агента (для менеджерской вкладки «Тендеры»)
+        "agent_card": json.loads(field("agent_card_json", "null")) if field("agent_card_json") else None,
     }
     documents = []
     for doc in documents_for(conn, row["number"]):
@@ -417,7 +558,9 @@ def query_tenders(filters: dict[str, Any]) -> dict[str, Any]:
     """Читает обработанные тендеры из БД с фильтрами по датам/домену/тексту."""
     conn = connect()
     try:
-        where = ["a.tender_number IS NOT NULL"]
+        # на «Тендеры» попадают только тендеры, прошедшие ИИ-агента (есть структурированная
+        # карточка). Rules-only и упавшие прогоны (agent_card_json IS NULL) — скрыты.
+        where = ["a.agent_card_json IS NOT NULL"]
         params: list[Any] = []
         if filters.get("date_from"):
             where.append("t.publish_date_iso >= ?")
@@ -448,7 +591,7 @@ def query_tenders(filters: dict[str, Any]) -> dict[str, Any]:
             "items": items,
             "source": "zakupki.gov.ru" if has_real else "fallback",
             "source_url": "https://zakupki.gov.ru/epz/order/extendedsearch/results.html",
-            "error": "" if items else "Хранилище пусто — запустите пайплайн: python pipeline.py",
+            "error": "" if items else "Нет тендеров, прошедших ИИ-анализ — запустите анализ на вкладке «ИИ-анализ».",
             "query": filters.get("query", ""),
             "parsed_at": last_run or "",
             "live_count": len(items),

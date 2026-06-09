@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import analyzer
 import db
 import fetcher
 from extract import extract_text_from_file
@@ -55,61 +56,6 @@ def requirements_payload() -> dict[str, Any]:
             "Проверка сроков подачи: аукцион 7/15 календарных дней, котировки 4 рабочих дня, конкурс 15 календарных дней.",
         ],
         "domains": DOMAIN_TRIGGERS,
-    }
-
-
-def admin_payload() -> dict[str, Any]:
-    """Данные для страницы мониторинга /admin: прогоны, очередь, конфиг ИИ."""
-    import ai as ai_module
-
-    runs = db.recent_runs(50)
-    status = db.pipeline_status()
-
-    active = next((r for r in runs if r.get("status") == "running"), None)
-    last_done = next((r for r in runs if r.get("status") in ("completed", "error", "stalled")), None)
-
-    conn = db.connect()
-    try:
-        pending_rows = conn.execute(
-            "SELECT number, title FROM tenders WHERE pipeline_status='fetched' "
-            "ORDER BY fetched_at DESC LIMIT 25"
-        ).fetchall()
-        error_rows = conn.execute(
-            "SELECT number, title, error FROM tenders WHERE pipeline_status='error' "
-            "ORDER BY fetched_at DESC LIMIT 25"
-        ).fetchall()
-    finally:
-        conn.close()
-
-    gateway_url = os.environ.get("RMR_GATEWAY_URL", "")
-    gateway_host = urllib.parse.urlparse(gateway_url).hostname or "" if gateway_url else ""
-
-    return {
-        "current": {
-            "is_running": bool(active),
-            "active_run": active,
-            "last_run": last_done,
-            "source": status.get("source"),
-            "cron_note": "Пайплайн запускается по cron раз в час",
-        },
-        "runs": runs,
-        "queue": {
-            "pending": status.get("pending", 0),
-            "error": status.get("error", 0),
-            "pending_sample": [{"number": r["number"], "title": r["title"]} for r in pending_rows],
-            "error_sample": [
-                {"number": r["number"], "title": r["title"], "error": r["error"]}
-                for r in error_rows
-            ],
-        },
-        "config": {
-            "ai_enabled": ai_module.is_configured(),
-            "ai_model": ai_module.MODEL,
-            "ai_gateway": gateway_host,                # только хост, без ключа
-            "ai_configured_gateway": bool(gateway_url),
-            "text_budget": ai_module.TEXT_BUDGET,
-            "system_prompt": ai_module.SYSTEM_PROMPT,
-        },
     }
 
 
@@ -206,6 +152,152 @@ def crawler_tender_payload(number: str) -> dict[str, Any]:
     }
 
 
+# ── Вкладка «ИИ-анализ» (стадия 2) ─────────────────────────────────────────
+
+def analysis_payload() -> dict[str, Any]:
+    """Обзор вкладки «ИИ-анализ»: статус шлюза, очередь, активный прогон, живой шаг, прогоны."""
+    import agent as agent_module
+
+    runs = [r for r in db.recent_runs(50) if r.get("kind") in ("analyze", "pipeline")]
+    active = db.active_run()
+    status = db.pipeline_status()
+
+    current = None
+    conn = db.connect()
+    try:
+        if active:
+            running = db.running_agent_run(conn, active["id"])
+            if running is not None:
+                t = conn.execute(
+                    "SELECT title FROM tenders WHERE number=?", (running["tender_number"],)
+                ).fetchone()
+                current = {
+                    "tender_number": running["tender_number"],
+                    "tender_title": (t["title"] if t else "") or running["tender_number"],
+                    "step": running["current_step"] or "",
+                }
+        agg = conn.execute(
+            "SELECT COUNT(*) AS total, SUM(status='done') AS done, "
+            "SUM(status='partial') AS partial, SUM(status='error') AS err FROM agent_runs"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    gateway_url = os.environ.get("RMR_GATEWAY_URL", "")
+    gateway_host = urllib.parse.urlparse(gateway_url).hostname or "" if gateway_url else ""
+
+    return {
+        "active_run": active,
+        "current": current,
+        "queue": {
+            "pending": status.get("pending", 0),
+            "analyzed": status.get("analyzed", 0),
+            "error": status.get("error", 0),
+        },
+        "summary": {
+            "agent_runs": agg["total"] or 0,
+            "done": agg["done"] or 0,
+            "partial": agg["partial"] or 0,
+            "error": agg["err"] or 0,
+        },
+        "ai": {
+            "enabled": agent_module.is_configured(),
+            "model": agent_module.MODEL,
+            "gateway": gateway_host,
+        },
+        "runs": runs,
+        "cron_note": "Полный пайплайн (сбор + анализ) запускается по cron раз в час",
+    }
+
+
+def analysis_run_payload(run_id: int) -> dict[str, Any]:
+    """Деталь прогона анализа: тендеры с агентным статусом, доменом, уверенностью, шагами."""
+    run = next((r for r in db.recent_runs(200) if r.get("id") == run_id), None)
+    conn = db.connect()
+    try:
+        tenders = []
+        for ar in db.agent_runs_for_pipeline(conn, run_id):
+            t = conn.execute(
+                "SELECT title, pipeline_status FROM tenders WHERE number=?", (ar["tender_number"],)
+            ).fetchone()
+            tenders.append({
+                "number": ar["tender_number"],
+                "title": (t["title"] if t else "") or ar["tender_number"],
+                "agent_status": ar["status"] or "—",
+                "domain": ar["domain"] or "",
+                "confidence": ar["confidence"] or "",
+                "step_count": ar["step_count"] or 0,
+                "limit_reached": bool(ar["limit_reached"]),
+                "tender_status": (t["pipeline_status"] if t else "") or "",
+            })
+    finally:
+        conn.close()
+    return {"run": run, "tenders": tenders}
+
+
+def analysis_tender_payload(number: str) -> dict[str, Any]:
+    """Трейс + карточка + документы одного тендера (последняя попытка) + история попыток."""
+    conn = db.connect()
+    try:
+        t = conn.execute("SELECT * FROM tenders WHERE number=?", (number,)).fetchone()
+        latest = db.latest_agent_run(conn, number)
+        history = db.agent_runs_for_tender(conn, number)
+        docs = db.documents_for(conn, number)
+    finally:
+        conn.close()
+
+    card = json.loads(latest["card_json"]) if latest and latest["card_json"] else None
+    steps = json.loads(latest["steps_json"]) if latest and latest["steps_json"] else []
+    documents = [
+        {
+            "id": d["id"],
+            "filename": d["filename"],
+            "type": d["type"] or "file",
+            "status": d["status"] or "ok",
+            "size_bytes": d["size_bytes"],
+        }
+        for d in docs
+    ]
+    run_info = None
+    if latest is not None:
+        run_info = {
+            "id": latest["id"],
+            "status": latest["status"],
+            "model": latest["model"],
+            "step_count": latest["step_count"] or 0,
+            "tool_calls": latest["tool_calls"] or 0,
+            "tokens": latest["tokens"] or 0,
+            "duration_sec": latest["duration_sec"],
+            "limit_reached": bool(latest["limit_reached"]),
+            "error": latest["error"] or "",
+            "started_at": latest["started_at"],
+        }
+    history_list = [
+        {
+            "id": r["id"],
+            "status": r["status"],
+            "step_count": r["step_count"] or 0,
+            "limit_reached": bool(r["limit_reached"]),
+            "started_at": r["started_at"],
+            "model": r["model"],
+        }
+        for r in history
+    ]
+    return {
+        "tender": {
+            "number": number,
+            "title": (t["title"] if t else number) or number,
+            "url": (t["url"] if t else "") or "",
+            "pipeline_status": (t["pipeline_status"] if t else "") or "",
+        },
+        "run": run_info,
+        "card": card,
+        "steps": steps,
+        "documents": documents,
+        "history": history_list,
+    }
+
+
 # ── Фоновый сбор (стадия 1) ───────────────────────────────────────────────
 # Сервер — ThreadingHTTPServer, так что запросы не блокируют друг друга; запуск отделяем в
 # daemon-тред, чтобы POST отвечал мгновенно и сбор пережил отключение клиента. Лок сериализует
@@ -265,6 +357,61 @@ def start_retry_run(original_run_id: int) -> dict[str, Any]:
         )
     threading.Thread(target=_run_retry_job, args=(retry_run_id, original_run_id), daemon=True).start()
     return {"started": True, "run_id": retry_run_id}
+
+
+# ── Фоновый анализ (стадия 2) ──────────────────────────────────────────────
+# Общий single-run guard с сбором: сбор и анализ взаимоисключающи (одна тяжёлая работа за раз).
+
+def _analyze_progress_writer(run_id: int):
+    def cb(done: int, total: int) -> None:
+        db.update_run_progress(run_id, tenders_total=total, tenders_done=done)
+    return cb
+
+
+def _run_analyze_job(run_id: int) -> None:
+    source = db.pipeline_status().get("source", "fallback")
+    try:
+        summary = analyzer.analyze_new(run_id=run_id, progress=_analyze_progress_writer(run_id))
+        db.finish_run(run_id, None, summary, source, "completed", "")
+    except Exception:
+        db.finish_run(run_id, None, {}, source, "error", traceback.format_exc())
+
+
+def _run_reanalyze_job(run_id: int, number: str) -> None:
+    source = db.pipeline_status().get("source", "fallback")
+    try:
+        db.update_run_progress(run_id, tenders_total=1, tenders_done=0)
+        result = analyzer.reanalyze_tender(number, run_id=run_id)
+        db.update_run_progress(run_id, tenders_total=1, tenders_done=1)
+        ok = bool(result.get("ok"))
+        db.finish_run(
+            run_id, None, {"analyzed": 1 if ok else 0, "failed": 0 if ok else 1},
+            source, "completed" if ok else "error", "" if ok else str(result.get("error", "")),
+        )
+    except Exception:
+        db.finish_run(run_id, None, {}, source, "error", traceback.format_exc())
+
+
+def start_analysis() -> dict[str, Any]:
+    """Стартует батч-анализ очереди (стадия 2) в фоне. Отклоняет, если уже идёт прогон."""
+    with _crawl_lock:
+        active = db.active_run()
+        if active is not None:
+            return {"started": False, "reason": "already_running", "active_run": active}
+        run_id = db.start_run("анализ очереди", 0, kind="analyze", stage="analyze")
+    threading.Thread(target=_run_analyze_job, args=(run_id,), daemon=True).start()
+    return {"started": True, "run_id": run_id}
+
+
+def start_reanalyze(number: str) -> dict[str, Any]:
+    """Стартует фоновый переанализ одного тендера. Отклоняет, если уже идёт прогон."""
+    with _crawl_lock:
+        active = db.active_run()
+        if active is not None:
+            return {"started": False, "reason": "already_running", "active_run": active}
+        run_id = db.start_run(f"переанализ · {number}", 0, kind="analyze", stage="reanalyze")
+    threading.Thread(target=_run_reanalyze_job, args=(run_id, number), daemon=True).start()
+    return {"started": True, "run_id": run_id}
 
 
 def _read_json_body(rfile: io.RawIOBase, headers: object) -> dict:
@@ -355,9 +502,6 @@ class TenderHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/pipeline":
             self.send_json(db.pipeline_status())
             return
-        if parsed.path == "/api/admin":
-            self.send_json(admin_payload())
-            return
         if parsed.path == "/api/crawler":
             self.send_json(crawler_payload())
             return
@@ -373,18 +517,33 @@ class TenderHandler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             self.send_json(crawler_tender_payload(query.get("number", [""])[0].strip()))
             return
+        if parsed.path == "/api/analysis":
+            self.send_json(analysis_payload())
+            return
+        if parsed.path == "/api/analysis/run":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                run_id = int(query.get("id", ["0"])[0])
+            except ValueError:
+                run_id = 0
+            self.send_json(analysis_run_payload(run_id))
+            return
+        if parsed.path == "/api/analysis/tender":
+            query = urllib.parse.parse_qs(parsed.query)
+            self.send_json(analysis_tender_payload(query.get("number", [""])[0].strip()))
+            return
         if parsed.path == "/api/file":
             query = urllib.parse.parse_qs(parsed.query)
             self.serve_file(query.get("id", [""])[0])
             return
-        if parsed.path == "/admin":
-            self.send_response(302)
-            self.send_header("Location", "/admin.html")
-            self.end_headers()
-            return
         if parsed.path == "/crawler":
             self.send_response(302)
             self.send_header("Location", "/crawler.html")
+            self.end_headers()
+            return
+        if parsed.path == "/analysis":
+            self.send_response(302)
+            self.send_header("Location", "/analysis.html")
             self.end_headers()
             return
         self.serve_static(parsed.path)
@@ -426,6 +585,19 @@ class TenderHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "run_id обязателен"}, 400)
                 return
             result = start_retry_run(run_id)
+            self.send_json(result, 200 if result.get("started") else 409)
+            return
+        if parsed.path == "/api/analysis/start":
+            result = start_analysis()
+            self.send_json(result, 200 if result.get("started") else 409)
+            return
+        if parsed.path == "/api/analysis/reanalyze":
+            body = _read_json_body(self.rfile, self.headers)
+            number = str(body.get("number", "")).strip()
+            if not number:
+                self.send_json({"error": "number обязателен"}, 400)
+                return
+            result = start_reanalyze(number)
             self.send_json(result, 200 if result.get("started") else 409)
             return
         self.send_json({"error": "Not found"}, 404)

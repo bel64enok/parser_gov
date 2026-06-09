@@ -224,7 +224,10 @@ function renderTenders() {
   const items = filteredTendersByTags();
   const container = byId('tenderList');
   if (!items.length) {
-    container.innerHTML = '<div class="loading">По выбранным тегам карточки не найдены. Сбросьте теги или выберите другую комбинацию.</div>';
+    const storeEmpty = state.tenders.length === 0;
+    container.innerHTML = storeEmpty
+      ? '<div class="empty">Пока нет тендеров, прошедших ИИ-анализ. Запустите анализ на вкладке <a href="/analysis.html">«ИИ-анализ»</a>.</div>'
+      : '<div class="loading">По выбранным тегам карточки не найдены. Сбросьте теги или выберите другую комбинацию.</div>';
     byId('resultNote').textContent = `0 из ${state.tenders.length} карточек`;
     renderPagination(0);
     return;
@@ -305,6 +308,72 @@ function renderAiBlock(analysis) {
   `;
 }
 
+// ── Структурированная карточка ИИ-агента (как на вкладке «ИИ-анализ», с цитатами) ──
+function confidenceTag(value) {
+  const v = (value || '').toLowerCase();
+  const cls = v === 'высокая' ? 'pass' : v === 'низкая' ? 'risk' : 'warning';
+  return value ? `<span class="tag ${cls}">${escapeHtml(value)}</span>` : '';
+}
+
+let citeSeq = 0;
+function citationChip(source) {
+  if (!source || (!source.filename && !source.quote)) return '';
+  const id = `tcite-${++citeSeq}`;
+  const file = source.filename || 'источник';
+  const quote = source.quote ? `<blockquote class="cite-quote">«${escapeHtml(source.quote)}»</blockquote>` : '';
+  return `
+    <span class="cite">
+      <button type="button" class="cite-chip" aria-expanded="false" data-cite="${id}">📄 ${escapeHtml(file)}</button>
+      <span class="cite-body" id="${id}" hidden>${quote}</span>
+    </span>`;
+}
+
+function renderAgentCard(card) {
+  const domainTag = card.domain
+    ? `<span class="tag ${card.domain === 'МОБ' ? 'mob' : ''}">${escapeHtml(card.domain)}</span>`
+    : '';
+  const limit = card.limit_reached ? '<span class="tag warning">частичная · лимит шагов</span>' : '';
+  const header = `
+    <div class="card-header">
+      <div class="card-header__tags">${domainTag} ${confidenceTag(card.confidence)} ${limit}</div>
+      ${card.summary ? `<p class="card-summary">${escapeHtml(card.summary)}</p>` : ''}
+    </div>`;
+
+  const sections = (card.sections || [])
+    .map((sec) => {
+      const rows = (sec.facts || [])
+        .map((f) => {
+          const val = f.found
+            ? escapeHtml(f.value)
+            : '<span class="fact-empty">не найдено в документации</span>';
+          const cite = f.found ? citationChip(f.source) : '';
+          return `<div class="fact-row"><dt class="fact-label">${escapeHtml(f.label)}</dt><dd class="fact-value">${val}${cite}</dd></div>`;
+        })
+        .join('');
+      return `<section class="card-section"><h4 class="card-section__title">${escapeHtml(sec.title)}</h4><dl class="fact-list">${rows}</dl></section>`;
+    })
+    .join('');
+
+  const reqs = card.participant_requirements || [];
+  const reqSection = reqs.length
+    ? `<section class="card-section"><h4 class="card-section__title">Требования к участнику</h4><ul class="req-list">${reqs
+        .map((r) => {
+          const dot = r.present ? 'dot-ok' : 'dot-idle';
+          const mark = r.present ? 'есть в документации' : 'не подтверждено';
+          return `<li class="req-row"><span class="stage-dot ${dot}"></span><span class="req-text">${escapeHtml(r.label)}<small class="req-mark">${mark}</small></span>${citationChip(r.source)}</li>`;
+        })
+        .join('')}</ul></section>`
+    : '';
+
+  const risks = (card.risks || []).length
+    ? `<section class="card-section"><h4 class="card-section__title">Риски</h4><ul class="risk-list">${card.risks
+        .map((r) => `<li>${escapeHtml(r)}</li>`)
+        .join('')}</ul></section>`
+    : '';
+
+  return `<section class="agent-card-block"><h3>Извлечённые требования (ИИ)</h3>${header}${sections}${reqSection}${risks}</section>`;
+}
+
 function renderDetail(tender) {
   if (!tender) {
     byId('detailBody').innerHTML = '<div class="empty">Нет выбранной закупки</div>';
@@ -347,7 +416,7 @@ function renderDetail(tender) {
         )
         .join('')}
     </div>
-    ${renderAiBlock(analysis)}
+    ${analysis.agent_card ? renderAgentCard(analysis.agent_card) : renderAiBlock(analysis)}
     <section class="document-section">
       <h3>Документы и доказательства</h3>
       <p>Подсвечены фрагменты, которые подтверждают домен, способ закупки и критерии анализа.</p>
@@ -422,6 +491,18 @@ async function loadTenders() {
     byId('tenderList').innerHTML = '<div class="loading">Не удалось загрузить тендеры. Обновите страницу для повторной попытки.</div>';
   }
 }
+
+// Цитата-источник: inline-раскрытие фрагмента документа
+document.addEventListener('click', (event) => {
+  const chip = event.target.closest('.cite-chip');
+  if (!chip) return;
+  const body = byId(chip.dataset.cite);
+  if (!body) return;
+  const open = !body.hidden;
+  body.hidden = open;
+  chip.setAttribute('aria-expanded', String(!open));
+  chip.classList.toggle('cite-chip--open', !open);
+});
 
 document.addEventListener('submit', (event) => {
   if (event.target.id === 'manualTagForm') {

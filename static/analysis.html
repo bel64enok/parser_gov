@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tender Radar — ИИ-анализ</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="beeline-logo" aria-label="Beeline"><span></span></div>
+        <div>
+          <strong>beeline Tender Radar</strong>
+          <span>ИИ-анализ · стадия 2</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/crawler.html">Сбор документов</a>
+        <a href="/analysis.html" aria-current="page">ИИ-анализ</a>
+        <a href="/">Тендеры</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Контрольная панель: статус шлюза + очередь + запуск + живой прогресс -->
+      <section class="crawl-control" aria-label="Запуск ИИ-анализа">
+        <div class="analysis-control__head">
+          <span class="admin-badge" id="gatewayBadge">
+            <span class="stage-dot dot-idle"></span><span id="gatewayLabel">Проверка шлюза…</span>
+          </span>
+          <span class="analysis-queue" id="queueLine"></span>
+          <button type="button" id="analyzeStart">Запустить анализ</button>
+        </div>
+        <p class="crawl-hint" id="analyzeHint">
+          Агент читает документы из очереди, извлекает структурированные требования с цитатами. Один тендер за раз.
+        </p>
+        <div class="analysis-gateway-off" id="gatewayOff" hidden>
+          Шлюз ИИ не настроен — анализ идёт на правилах, без агента и трейса.
+          Заполните RMR_GATEWAY_URL и RMR_API_KEY в <code>.env</code>.
+        </div>
+        <div class="crawl-progress" id="analyzeProgress" hidden>
+          <div class="crawl-progress__head">
+            <span class="admin-badge admin-badge--pulse">
+              <span class="stage-dot dot-warn"></span><span id="progressLabel">Идёт анализ</span>
+            </span>
+            <span class="crawl-progress__counters" id="progressStep"></span>
+          </div>
+          <div class="crawl-bar" role="progressbar" aria-label="Прогресс анализа">
+            <div class="crawl-bar__fill" id="progressFill"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Master: список прогонов анализа -->
+      <section class="admin-section" id="runsView" aria-label="Прогоны анализа">
+        <div class="admin-section__head">
+          <h2>Прогоны анализа</h2>
+          <span class="muted-text" id="runsCount"></span>
+        </div>
+        <p class="crawl-summary" id="analysisSummary"></p>
+        <div class="admin-table-wrap">
+          <table class="admin-table" id="runsTable">
+            <thead>
+              <tr>
+                <th>Статус</th>
+                <th>Тип</th>
+                <th>Запрос</th>
+                <th>Тендеров</th>
+                <th>Длит.</th>
+                <th>Начат</th>
+              </tr>
+            </thead>
+            <tbody id="runsBody">
+              <tr><td colspan="6" class="admin-empty">Загрузка…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Detail: тендеры выбранного прогона -->
+      <section class="admin-section" id="runView" hidden aria-label="Тендеры прогона">
+        <nav class="crumbs">
+          <button type="button" class="link-button" id="backToRuns">← Прогоны</button>
+        </nav>
+        <div class="admin-section__head">
+          <h2 id="runTitle">Прогон</h2>
+        </div>
+        <p class="crawl-summary" id="runMeta"></p>
+        <div class="admin-table-wrap">
+          <table class="admin-table" id="runTendersTable">
+            <thead>
+              <tr>
+                <th>№</th>
+                <th>Название</th>
+                <th>Анализ</th>
+                <th>Домен</th>
+                <th>Уверенность</th>
+                <th>Шагов</th>
+              </tr>
+            </thead>
+            <tbody id="runTendersBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- Drawer: трейс / карточка / документы тендера -->
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <aside
+      class="detail-drawer detail-drawer--wide"
+      id="detailDrawer"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="drawerTitle"
+      aria-hidden="true"
+    >
+      <div class="detail-drawer__head">
+        <div class="drawer-title-wrap">
+          <h2 id="drawerTitle">Разбор анализа</h2>
+          <span class="drawer-subtitle" id="drawerSubtitle"></span>
+        </div>
+        <button type="button" class="drawer-close" id="drawerClose" aria-label="Закрыть">×</button>
+      </div>
+      <div class="drawer-tabs" role="tablist" aria-label="Разделы разбора">
+        <button class="drawer-tab" role="tab" id="tab-trace" data-tab="trace" aria-selected="true">Трейс</button>
+        <button class="drawer-tab" role="tab" id="tab-card" data-tab="card" aria-selected="false">Карточка</button>
+        <button class="drawer-tab" role="tab" id="tab-docs" data-tab="docs" aria-selected="false">Документы</button>
+      </div>
+      <div id="detailBody" class="detail-drawer__body"></div>
+    </aside>
+
+    <script src="/analysis.js"></script>
+  </body>
+</html>

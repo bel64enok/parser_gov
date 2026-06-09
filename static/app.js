@@ -224,7 +224,10 @@ function renderTenders() {
   const items = filteredTendersByTags();
   const container = byId('tenderList');
   if (!items.length) {
-    container.innerHTML = '<div class="loading">По выбранным тегам карточки не найдены. Сбросьте теги или выберите другую комбинацию.</div>';
+    const storeEmpty = state.tenders.length === 0;
+    container.innerHTML = storeEmpty
+      ? '<div class="empty">Пока нет тендеров, прошедших ИИ-анализ. Запустите анализ на вкладке <a href="/analysis.html">«ИИ-анализ»</a>.</div>'
+      : '<div class="loading">По выбранным тегам карточки не найдены. Сбросьте теги или выберите другую комбинацию.</div>';
     byId('resultNote').textContent = `0 из ${state.tenders.length} карточек`;
     renderPagination(0);
     return;

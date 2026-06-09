@@ -558,7 +558,9 @@ def query_tenders(filters: dict[str, Any]) -> dict[str, Any]:
     """Читает обработанные тендеры из БД с фильтрами по датам/домену/тексту."""
     conn = connect()
     try:
-        where = ["a.tender_number IS NOT NULL"]
+        # на «Тендеры» попадают только тендеры, прошедшие ИИ-агента (есть структурированная
+        # карточка). Rules-only и упавшие прогоны (agent_card_json IS NULL) — скрыты.
+        where = ["a.agent_card_json IS NOT NULL"]
         params: list[Any] = []
         if filters.get("date_from"):
             where.append("t.publish_date_iso >= ?")
@@ -589,7 +591,7 @@ def query_tenders(filters: dict[str, Any]) -> dict[str, Any]:
             "items": items,
             "source": "zakupki.gov.ru" if has_real else "fallback",
             "source_url": "https://zakupki.gov.ru/epz/order/extendedsearch/results.html",
-            "error": "" if items else "Хранилище пусто — запустите пайплайн: python pipeline.py",
+            "error": "" if items else "Нет тендеров, прошедших ИИ-анализ — запустите анализ на вкладке «ИИ-анализ».",
             "query": filters.get("query", ""),
             "parsed_at": last_run or "",
             "live_count": len(items),

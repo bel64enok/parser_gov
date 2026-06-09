@@ -27,8 +27,13 @@
       <section class="crawl-control" aria-label="Запуск сбора документов">
         <form class="crawl-form" id="crawlForm">
           <label class="crawl-field">
-            <span>Запрос</span>
-            <input type="text" id="crawlQuery" value="мобильная связь" autocomplete="off" />
+            <span>Запрос <span class="crawl-field__note">необязательно</span></span>
+            <input
+              type="text"
+              id="crawlQuery"
+              placeholder="все категории · последние опубликованные"
+              autocomplete="off"
+            />
           </label>
           <label class="crawl-field crawl-field--limit">
             <span>Лимит</span>
@@ -63,6 +68,7 @@
           <table class="admin-table" id="runsTable">
             <thead>
               <tr>
+                <th class="admin-table__num">#</th>
                 <th>Статус</th>
                 <th>Тип</th>
                 <th>Стадия</th>
@@ -75,7 +81,7 @@
               </tr>
             </thead>
             <tbody id="runsBody">
-              <tr><td colspan="9" class="admin-empty">Загрузка…</td></tr>
+              <tr><td colspan="10" class="admin-empty">Загрузка…</td></tr>
             </tbody>
           </table>
         </div>
@@ -97,7 +103,7 @@
               <tr>
                 <th>№</th>
                 <th>Название</th>
-                <th>Файлов</th>
+                <th>Скачано</th>
                 <th>Распаковано</th>
                 <th>Упало</th>
                 <th>Статус</th>

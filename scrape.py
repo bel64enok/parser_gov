@@ -29,6 +29,9 @@ HEADERS = {
 
 
 def build_search_url(query: str, page: int = 1, limit: int = 10, refresh_token: str | None = None) -> str:
+    # Пустой запрос = «просто последние»: сортируем по дате размещения (свежие закупки),
+    # а не по дате обновления (которая поднимает наверх правки старых тендеров).
+    sort_by = "UPDATE_DATE" if (query or "").strip() else "PUBLISH_DATE"
     params = {
         "searchString": query,
         "morphology": "on",
@@ -37,7 +40,7 @@ def build_search_url(query: str, page: int = 1, limit: int = 10, refresh_token: 
         "sortDirection": "false",
         "recordsPerPage": f"_{limit}",
         "showLotsInfoHidden": "false",
-        "sortBy": "UPDATE_DATE",
+        "sortBy": sort_by,
         "fz44": "on",
         "fz223": "on",
         "pc": "on",

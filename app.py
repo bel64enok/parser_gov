@@ -91,32 +91,47 @@ def crawler_payload() -> dict[str, Any]:
 
 
 def crawler_run_payload(run_id: int) -> dict[str, Any]:
-    """Деталь прогона: тендеры этого прогона со сводкой загрузки по каждому."""
+    """Деталь прогона: тендеры, добавленные этим прогоном, со сводкой загрузки по каждому.
+
+    Счётчики файлов скоупим по run_id документа — деталь показывает ровно то, что сделал
+    ЭТОТ запуск. Итоги шапки (`totals`) выводим из тех же строк documents, поэтому
+    «скачано/распаковано/упало» в шапке = сумма строк таблицы, без расхождений.
+    """
     run = next((r for r in db.recent_runs(200) if r.get("id") == run_id), None)
     conn = db.connect()
     try:
         tenders = []
         for t in db.tenders_for_run(conn, run_id):
             agg = conn.execute(
-                "SELECT COUNT(*) AS files_total, "
-                "SUM(status IN ('ok','unpacked','archive')) AS files_ok, "
-                "SUM(status='failed') AS files_failed, "
-                "SUM(status='unpacked') AS unpacked "
-                "FROM documents WHERE tender_number=?",
-                (t["number"],),
+                "SELECT SUM(status IN ('ok','archive')) AS downloaded, "
+                "SUM(status='unpacked') AS unpacked, "
+                "SUM(status='failed') AS failed "
+                "FROM documents WHERE tender_number=? AND run_id=?",
+                (t["number"], run_id),
             ).fetchone()
             tenders.append({
                 "number": t["number"],
                 "title": t["title"],
                 "pipeline_status": t["pipeline_status"],
-                "files_total": agg["files_total"] or 0,
-                "files_ok": agg["files_ok"] or 0,
-                "files_failed": agg["files_failed"] or 0,
+                "downloaded": agg["downloaded"] or 0,
                 "unpacked": agg["unpacked"] or 0,
+                "files_failed": agg["failed"] or 0,
             })
+        totals_row = conn.execute(
+            "SELECT SUM(status IN ('ok','archive')) AS downloaded, "
+            "SUM(status='unpacked') AS unpacked, "
+            "SUM(status='failed') AS failed "
+            "FROM documents WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
     finally:
         conn.close()
-    return {"run": run, "tenders": tenders}
+    totals = {
+        "downloaded": totals_row["downloaded"] or 0,
+        "unpacked": totals_row["unpacked"] or 0,
+        "failed": totals_row["failed"] or 0,
+    }
+    return {"run": run, "tenders": tenders, "totals": totals}
 
 
 def crawler_tender_payload(number: str) -> dict[str, Any]:
@@ -555,7 +570,8 @@ class TenderHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/crawler/start":
             body = _read_json_body(self.rfile, self.headers)
-            query = str(body.get("query", "")).strip() or "мобильная связь"
+            # Пустой запрос разрешён: сбор «последних опубликованных» без фильтра по теме.
+            query = str(body.get("query", "")).strip()
             try:
                 limit = int(body.get("limit", 10))
             except (TypeError, ValueError):

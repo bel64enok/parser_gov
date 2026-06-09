@@ -321,6 +321,15 @@ button:hover {
   background: var(--yellow-dark);
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  background: var(--yellow);
+}
+
 /* ── Status dots (shared: admin run badges) ───────────── */
 
 .stage-dot {
@@ -1338,5 +1347,495 @@ mark {
   .detail-drawer,
   .drawer-backdrop {
     transition: none;
+  }
+}
+
+/* ── ИИ-анализ (стадия 2) ──────────────────────────────────────────────── */
+
+.analysis-control__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+}
+
+.analysis-queue {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.analysis-queue strong {
+  color: var(--black);
+}
+
+.analysis-q-err {
+  color: var(--risk);
+}
+
+.analysis-control__head button {
+  flex: 0 0 auto;
+}
+
+.analysis-gateway-off {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid #f0d6a8;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #6b4e00;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.analysis-gateway-off code {
+  font-family: monospace;
+  color: var(--black);
+}
+
+/* Drawer: широкий вариант на десктопе (трейс длинный) */
+@media (min-width: 981px) {
+  .detail-drawer--wide {
+    width: min(720px, 100%);
+  }
+}
+
+.drawer-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drawer-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.drawer-tender-title {
+  margin: 0 0 14px;
+  color: var(--black);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Табы drawer (sticky выше контента трейса, чтобы номера шагов не перекрывали) */
+.detail-drawer--wide .detail-drawer__head {
+  z-index: 5;
+}
+
+.drawer-tabs {
+  position: sticky;
+  top: 73px;
+  z-index: 4;
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  background: var(--white);
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-tab {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.drawer-tab:hover {
+  background: var(--soft);
+  color: var(--black);
+}
+
+.drawer-tab[aria-selected='true'] {
+  color: var(--black);
+  border-bottom-color: var(--yellow);
+}
+
+.drawer-tab:focus-visible {
+  outline: 2px solid var(--black);
+  outline-offset: -2px;
+}
+
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.trace-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--yellow-dark);
+  border-radius: 6px;
+  background: #fffdf1;
+  font-size: 13px;
+}
+
+.trace-error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f3c2c4;
+  border-radius: 6px;
+  background: #fff5f5;
+  color: #a31d24;
+  font-size: 13px;
+}
+
+/* Метрики прогона */
+.trace-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.trace-metric {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Трейс-таймлайн */
+.trace {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-node {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+}
+
+.trace-node__rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.trace-node__rail::before {
+  content: '';
+  position: absolute;
+  top: 24px;
+  bottom: -8px;
+  width: 2px;
+  background: var(--line);
+}
+
+.trace-node:last-child .trace-node__rail::before {
+  display: none;
+}
+
+.trace-node__num {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--black);
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 700;
+  z-index: 1;
+}
+
+.trace-node--final .trace-node__num {
+  background: var(--yellow);
+  color: var(--black);
+  border: 1px solid var(--yellow-dark);
+}
+
+.trace-node__body {
+  padding-bottom: 16px;
+  min-width: 0;
+}
+
+.trace-node__head {
+  margin-bottom: 6px;
+}
+
+.trace-kind {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.trace-kind--tool {
+  background: #eef1ff;
+  color: #2b3a8c;
+}
+
+.trace-kind--note {
+  background: #efefef;
+  color: var(--muted);
+}
+
+.trace-kind--final {
+  background: var(--yellow);
+  color: var(--black);
+}
+
+.trace-thought {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.trace-call {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0 0 6px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #1d1f24;
+  color: #f4f4f4;
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.trace-call--final {
+  background: var(--black);
+  color: var(--yellow);
+}
+
+.trace-obs {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.trace-obs summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.trace-obs pre,
+.trace-obs--flat {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #333;
+}
+
+.trace-node--flash .trace-node__body {
+  animation: trace-flash 1.6s ease-out;
+}
+
+@keyframes trace-flash {
+  0% { background: #fffbea; }
+  100% { background: transparent; }
+}
+
+/* Структурированная карточка */
+.card-header {
+  margin-bottom: 18px;
+}
+
+.card-header__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.card-summary {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.card-section {
+  margin-bottom: 18px;
+}
+
+.card-section__title {
+  margin: 0 0 8px;
+  color: var(--black);
+  font-size: 14px;
+}
+
+.fact-list {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.fact-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.fact-row:last-child {
+  border-bottom: none;
+}
+
+.fact-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fact-value {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.fact-empty {
+  color: #9a9a9a;
+  font-style: italic;
+}
+
+/* Требования к участнику */
+.req-list,
+.risk-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.risk-list {
+  padding-left: 18px;
+  list-style: disc;
+}
+
+.risk-list li {
+  line-height: 1.45;
+}
+
+.req-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.req-row:last-child {
+  border-bottom: none;
+}
+
+.req-text {
+  line-height: 1.4;
+}
+
+.req-mark {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Цитаты-источники (inline-раскрытие) */
+.cite {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: baseline;
+}
+
+.cite-chip {
+  min-height: 26px;
+  padding: 2px 8px;
+  border: 1px solid var(--yellow-dark);
+  border-radius: 999px;
+  background: #fffbea;
+  color: #6b4e00;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cite-chip:hover,
+.cite-chip--open {
+  background: var(--yellow);
+  color: var(--black);
+}
+
+.cite-body {
+  display: block;
+  margin-top: 8px;
+}
+
+.cite-body[hidden] {
+  display: none;
+}
+
+.cite-quote {
+  margin: 0 0 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  color: #333;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cite-jump {
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--black);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cite-jump:hover {
+  background: var(--soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trace-node--flash .trace-node__body {
+    animation: none;
+  }
+}
+
+@media (max-width: 980px) {
+  /* шапка drawer выше и переменная — не пиннингуем табы, чтобы не перекрывались */
+  .drawer-tabs {
+    position: static;
+  }
+
+  .fact-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 }

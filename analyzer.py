@@ -1,15 +1,17 @@
 """Стадия 2: ИИ-обработка. Извлекает текст из скачанных документов, прогоняет правила,
-затем ИИ поверх правил, пишет результат в таблицу analysis.
+затем ReAct-агент извлекает структурированную карточку требований поверх правил, пишет
+результат в analysis + agent_runs.
 
-Берёт тендеры со статусом 'fetched', переводит в 'analyzed'. ИИ опционален: без шлюза
-анализ остаётся на правилах.
+Берёт тендеры со статусом 'fetched', переводит в 'analyzed' (или 'error' при сбое извлечения).
+Агент опционален: без шлюза анализ остаётся на правилах. Один и тот же код вызывается из
+cron-пайплайна и из ручного запуска вкладки «ИИ-анализ» (через run_id + progress).
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-import ai
+import agent
 import db
 from extract import extract_text_from_file
 from rules import analyze_tender, collect_evidence, document_text_for_tender
@@ -20,16 +22,21 @@ _TENDER_FIELDS = (
     "publish_date", "deadline", "okpd2", "status", "contract_status", "url",
 )
 
+ProgressCb = Callable[[int, int], None]  # (done, total)
+
 
 def _row_to_tender(row) -> dict[str, Any]:
     return {field: row[field] for field in _TENDER_FIELDS}
 
 
-def _build_full_text(conn, tender: dict[str, Any]) -> str:
-    """Извлекает текст из всех документов тендера, сохраняет его и highlights в БД."""
+def _build_documents(conn, tender: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """Извлекает текст документов тендера, сохраняет его и highlights в БД.
+
+    Возвращает (full_text для правил, список {filename, text} для агента).
+    """
     parts: list[str] = []
-    docs = db.documents_for(conn, tender["number"])
-    for doc in docs:
+    docs: list[dict[str, Any]] = []
+    for doc in db.documents_for(conn, tender["number"]):
         # архивы уже распакованы в стадии 1 (их члены — отдельные строки 'unpacked'); сам .zip
         # пропускаем, иначе двойной счёт. 'failed' — без файла на диске, извлекать нечего.
         if doc["status"] in ("archive", "failed"):
@@ -40,39 +47,134 @@ def _build_full_text(conn, tender: dict[str, Any]) -> str:
         db.update_document_text(conn, doc["id"], text, highlights)
         if text.strip():
             parts.append(f"# {doc['filename']}\n{text}")
+            docs.append({"filename": doc["filename"], "text": text})
 
     if not parts:
         # документов нет — запасной текст из полей карточки
-        return document_text_for_tender(tender)
-    return "\n\n".join(parts)
+        fallback = document_text_for_tender(tender)
+        return fallback, [{"filename": "Карточка ЕИС", "text": fallback}]
+    return "\n\n".join(parts), docs
 
 
-def analyze_new() -> dict[str, Any]:
+def _ai_fields_from_card(card: dict[str, Any]) -> dict[str, Any]:
+    """Маппит структурированную карточку агента в legacy-поля analysis (для вкладки «Тендеры»)."""
+    reqs = [r["label"] for r in card.get("participant_requirements", []) if r.get("present")]
+    deadline_note = ""
+    for section in card.get("sections", []):
+        if section.get("title") == "Сроки":
+            for fact in section.get("facts", []):
+                if fact.get("found"):
+                    deadline_note = fact["value"]
+                    break
+    return {
+        "summary": card.get("summary", ""),
+        "requirements": reqs,
+        "risks": card.get("risks", []),
+        "suggested_domain": card.get("domain", ""),
+        "confidence": card.get("confidence", ""),
+        "deadline_note": deadline_note,
+    }
+
+
+def analyze_new(run_id: int | None = None, progress: ProgressCb | None = None) -> dict[str, Any]:
+    """Анализирует все тендеры в статусе 'fetched'.
+
+    run_id привязывает agent_runs к прогону (для вкладки «ИИ-анализ»); progress(done, total)
+    обновляет счётчики прогона.
+    """
     conn = db.connect()
     analyzed = 0
     failed = 0
-    use_ai = ai.is_configured()
-    print(f"[analyze] ИИ-шлюз {'подключён' if use_ai else 'не настроен — анализ на правилах'}")
+    use_ai = agent.is_configured()
+    print(f"[analyze] ИИ-агент {'подключён' if use_ai else 'не настроен — анализ на правилах'}")
     try:
         rows = db.tenders_by_status(conn, "fetched")
-        for row in rows:
+        total = len(rows)
+        if progress:
+            progress(0, total)
+        for index, row in enumerate(rows, start=1):
             tender = _row_to_tender(row)
             number = tender["number"]
             try:
-                full_text = _build_full_text(conn, tender)
+                full_text, documents = _build_documents(conn, tender)
                 rules_result = analyze_tender(tender, full_text)
-                ai_result = ai.ai_enrich(tender, full_text)
-                model = ai.MODEL if (use_ai and ai_result) else "rules-only"
+
+                ai_result: dict[str, Any] = {}
+                card = None
+                model = "rules-only"
+                if use_ai:
+                    ar_id = db.create_agent_run(conn, number, run_id, agent.MODEL)
+                    result = agent.run_agent(
+                        tender, documents,
+                        on_step=lambda text, _id=ar_id: db.set_agent_current_step(_id, text),
+                    )
+                    card = result.get("card")
+                    db.finish_agent_run(
+                        conn, ar_id,
+                        status=result["status"], card=card, steps=result["steps"],
+                        domain=result.get("domain", ""), confidence=result.get("confidence", ""),
+                        step_count=result["step_count"], tool_calls=result["tool_calls"],
+                        tokens=result["tokens"], limit_reached=result["limit_reached"],
+                        error=result.get("error", ""),
+                    )
+                    if card is not None:
+                        ai_result = _ai_fields_from_card(card)
+                        model = agent.MODEL
+
                 db.save_analysis(conn, number, rules_result, ai_result, model)
+                db.save_agent_card(conn, number, card)
                 db.set_status(conn, number, "analyzed")
                 analyzed += 1
-                print(f"[analyze] {number}: score {rules_result['score']}, ИИ {'+' if ai_result else '−'}")
+                tag = "agent" if card is not None else ("rules-only" if use_ai else "rules")
+                print(f"[analyze] {number}: score {rules_result['score']} · {tag}")
             except Exception as exc:
                 db.set_status(conn, number, "error", f"{exc.__class__.__name__}: {exc}")
                 failed += 1
                 print(f"[analyze] {number}: ошибка — {exc}")
+            if progress:
+                progress(index, total)
         print(f"[analyze] готово: проанализировано {analyzed}, ошибок {failed}")
         return {"analyzed": analyzed, "failed": failed}
+    finally:
+        conn.close()
+
+
+def reanalyze_tender(number: str, run_id: int | None = None) -> dict[str, Any]:
+    """Повторный анализ одного тендера (в т.ч. уже 'analyzed'). Новая попытка агента."""
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT * FROM tenders WHERE number=?", (number,)).fetchone()
+        if row is None:
+            return {"ok": False, "error": "тендер не найден"}
+        tender = _row_to_tender(row)
+        use_ai = agent.is_configured()
+        full_text, documents = _build_documents(conn, tender)
+        rules_result = analyze_tender(tender, full_text)
+        ai_result: dict[str, Any] = {}
+        card = None
+        model = "rules-only"
+        if use_ai:
+            ar_id = db.create_agent_run(conn, number, run_id, agent.MODEL)
+            result = agent.run_agent(
+                tender, documents,
+                on_step=lambda text, _id=ar_id: db.set_agent_current_step(_id, text),
+            )
+            card = result.get("card")
+            db.finish_agent_run(
+                conn, ar_id,
+                status=result["status"], card=card, steps=result["steps"],
+                domain=result.get("domain", ""), confidence=result.get("confidence", ""),
+                step_count=result["step_count"], tool_calls=result["tool_calls"],
+                tokens=result["tokens"], limit_reached=result["limit_reached"],
+                error=result.get("error", ""),
+            )
+            if card is not None:
+                ai_result = _ai_fields_from_card(card)
+                model = agent.MODEL
+        db.save_analysis(conn, number, rules_result, ai_result, model)
+        db.save_agent_card(conn, number, card)
+        db.set_status(conn, number, "analyzed")
+        return {"ok": True, "number": number, "has_card": card is not None}
     finally:
         conn.close()
 

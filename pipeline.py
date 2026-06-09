@@ -37,7 +37,13 @@ def main() -> None:
 
         fetch_summary = fetcher.fetch_new(query, limit, progress=_progress, run_id=run_id)
         source = fetch_summary.get("source", "fallback")
-        analyze_summary = analyzer.analyze_new()
+
+        # стадия 2: агент привязывается к этому прогону (drill-down во вкладке «ИИ-анализ»),
+        # прогресс на фазе анализа считает проанализированные тендеры
+        def _analyze_progress(done: int, total: int) -> None:
+            db.update_run_progress(run_id, tenders_total=total, tenders_done=done)
+
+        analyze_summary = analyzer.analyze_new(run_id=run_id, progress=_analyze_progress)
         db.finish_run(run_id, fetch_summary, analyze_summary, source, "completed", "")
         print(f"=== pipeline финиш: {fetch_summary} | {analyze_summary} ===")
     except Exception as exc:

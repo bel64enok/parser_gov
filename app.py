@@ -13,7 +13,9 @@ import mimetypes
 import os
 import re
 import shutil
+import threading
 import time
+import traceback
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import db
+import fetcher
 from extract import extract_text_from_file
 from rules import DOMAIN_TRIGGERS, analyze_tender, collect_evidence
 
@@ -110,6 +113,173 @@ def admin_payload() -> dict[str, Any]:
     }
 
 
+def crawler_payload() -> dict[str, Any]:
+    """Обзор вкладки «Сбор документов»: активный прогон, сводка по документам, список прогонов."""
+    runs = db.recent_runs(50)
+    active = db.active_run()
+    conn = db.connect()
+    try:
+        summary = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM tenders) AS tenders_total,
+                (SELECT COUNT(DISTINCT tender_number) FROM documents
+                    WHERE status IN ('ok','unpacked','archive')) AS tenders_with_files,
+                (SELECT COUNT(*) FROM documents WHERE status='failed') AS failed_files,
+                (SELECT COUNT(*) FROM documents WHERE status='archive') AS archives
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    return {
+        "active_run": active,
+        "summary": {
+            "tenders_total": summary["tenders_total"] or 0,
+            "tenders_with_files": summary["tenders_with_files"] or 0,
+            "failed_files": summary["failed_files"] or 0,
+            "archives": summary["archives"] or 0,
+        },
+        "runs": runs,
+        "cron_note": "Полный пайплайн (сбор + анализ) запускается по cron раз в час",
+    }
+
+
+def crawler_run_payload(run_id: int) -> dict[str, Any]:
+    """Деталь прогона: тендеры этого прогона со сводкой загрузки по каждому."""
+    run = next((r for r in db.recent_runs(200) if r.get("id") == run_id), None)
+    conn = db.connect()
+    try:
+        tenders = []
+        for t in db.tenders_for_run(conn, run_id):
+            agg = conn.execute(
+                "SELECT COUNT(*) AS files_total, "
+                "SUM(status IN ('ok','unpacked','archive')) AS files_ok, "
+                "SUM(status='failed') AS files_failed, "
+                "SUM(status='unpacked') AS unpacked "
+                "FROM documents WHERE tender_number=?",
+                (t["number"],),
+            ).fetchone()
+            tenders.append({
+                "number": t["number"],
+                "title": t["title"],
+                "pipeline_status": t["pipeline_status"],
+                "files_total": agg["files_total"] or 0,
+                "files_ok": agg["files_ok"] or 0,
+                "files_failed": agg["files_failed"] or 0,
+                "unpacked": agg["unpacked"] or 0,
+            })
+    finally:
+        conn.close()
+    return {"run": run, "tenders": tenders}
+
+
+def crawler_tender_payload(number: str) -> dict[str, Any]:
+    """Дерево документов одного тендера со статусом каждого файла."""
+    conn = db.connect()
+    try:
+        t = conn.execute("SELECT * FROM tenders WHERE number=?", (number,)).fetchone()
+        docs = db.documents_for(conn, number)
+    finally:
+        conn.close()
+    documents = [
+        {
+            "id": d["id"],
+            "filename": d["filename"],
+            "type": d["type"] or "file",
+            "status": d["status"] or "ok",
+            "error": d["error"] or "",
+            "size_bytes": d["size_bytes"],
+            "source_url": d["source_url"] or "",
+            "parent_doc_id": d["parent_doc_id"],
+        }
+        for d in docs
+    ]
+    return {
+        "tender": {
+            "number": number,
+            "title": (t["title"] if t else number) or number,
+            "url": (t["url"] if t else "") or "",
+            "run_id": t["run_id"] if t else None,
+            "pipeline_status": (t["pipeline_status"] if t else "") or "",
+        },
+        "documents": documents,
+    }
+
+
+# ── Фоновый сбор (стадия 1) ───────────────────────────────────────────────
+# Сервер — ThreadingHTTPServer, так что запросы не блокируют друг друга; запуск отделяем в
+# daemon-тред, чтобы POST отвечал мгновенно и сбор пережил отключение клиента. Лок сериализует
+# только проверку-и-старт (single-run guard).
+_crawl_lock = threading.Lock()
+
+
+def _progress_writer(run_id: int):
+    def cb(done: int, total: int, downloaded: int, unpacked: int, failed: int) -> None:
+        db.update_run_progress(
+            run_id, tenders_total=total, tenders_done=done,
+            files_downloaded=downloaded, files_unpacked=unpacked, files_failed=failed,
+        )
+    return cb
+
+
+def _run_fetch_job(run_id: int, query: str, limit: int) -> None:
+    source = "fallback"
+    try:
+        summary = fetcher.fetch_new(query, limit, progress=_progress_writer(run_id), run_id=run_id)
+        source = summary.get("source", "fallback")
+        db.finish_run(run_id, summary, None, source, "completed", "")
+    except Exception:
+        db.finish_run(run_id, {}, None, source, "error", traceback.format_exc())
+
+
+def _run_retry_job(retry_run_id: int, original_run_id: int) -> None:
+    try:
+        summary = fetcher.retry_run(original_run_id, progress=_progress_writer(retry_run_id))
+        db.finish_run(
+            retry_run_id, {"new": summary.get("downloaded", 0)}, None,
+            "zakupki.gov.ru", "completed", "",
+        )
+    except Exception:
+        db.finish_run(retry_run_id, {}, None, "zakupki.gov.ru", "error", traceback.format_exc())
+
+
+def start_crawl(query: str, limit: int) -> dict[str, Any]:
+    """Стартует ручной сбор (стадия 1) в фоне. Отклоняет, если уже идёт прогон."""
+    with _crawl_lock:
+        active = db.active_run()
+        if active is not None:
+            return {"started": False, "reason": "already_running", "active_run": active}
+        run_id = db.start_run(query, limit, kind="fetch", stage="fetch")
+    threading.Thread(target=_run_fetch_job, args=(run_id, query, limit), daemon=True).start()
+    return {"started": True, "run_id": run_id}
+
+
+def start_retry_run(original_run_id: int) -> dict[str, Any]:
+    """Стартует фоновый повтор всех упавших загрузок прогона original_run_id."""
+    with _crawl_lock:
+        active = db.active_run()
+        if active is not None:
+            return {"started": False, "reason": "already_running", "active_run": active}
+        retry_run_id = db.start_run(
+            f"повтор упавших · прогон #{original_run_id}", 0, kind="fetch", stage="retry"
+        )
+    threading.Thread(target=_run_retry_job, args=(retry_run_id, original_run_id), daemon=True).start()
+    return {"started": True, "run_id": retry_run_id}
+
+
+def _read_json_body(rfile: io.RawIOBase, headers: object) -> dict:
+    """Читает JSON-тело POST-запроса. Возвращает {} при пустом/битом теле."""
+    length = int(headers.get("Content-Length", 0) or 0)
+    if length <= 0:
+        return {}
+    raw = rfile.read(length)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _parse_multipart(rfile: io.RawIOBase, headers: object) -> dict:
     """Minimal multipart/form-data parser replacing the removed cgi.FieldStorage."""
     content_type: str = headers.get("Content-Type", "")
@@ -188,18 +358,79 @@ class TenderHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/admin":
             self.send_json(admin_payload())
             return
+        if parsed.path == "/api/crawler":
+            self.send_json(crawler_payload())
+            return
+        if parsed.path == "/api/crawler/run":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                run_id = int(query.get("id", ["0"])[0])
+            except ValueError:
+                run_id = 0
+            self.send_json(crawler_run_payload(run_id))
+            return
+        if parsed.path == "/api/crawler/tender":
+            query = urllib.parse.parse_qs(parsed.query)
+            self.send_json(crawler_tender_payload(query.get("number", [""])[0].strip()))
+            return
+        if parsed.path == "/api/file":
+            query = urllib.parse.parse_qs(parsed.query)
+            self.serve_file(query.get("id", [""])[0])
+            return
         if parsed.path == "/admin":
             self.send_response(302)
             self.send_header("Location", "/admin.html")
+            self.end_headers()
+            return
+        if parsed.path == "/crawler":
+            self.send_response(302)
+            self.send_header("Location", "/crawler.html")
             self.end_headers()
             return
         self.serve_static(parsed.path)
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/api/upload":
-            self.send_json({"error": "Not found"}, 404)
+        if parsed.path == "/api/upload":
+            self.handle_upload()
             return
+        if parsed.path == "/api/crawler/start":
+            body = _read_json_body(self.rfile, self.headers)
+            query = str(body.get("query", "")).strip() or "мобильная связь"
+            try:
+                limit = int(body.get("limit", 10))
+            except (TypeError, ValueError):
+                limit = 10
+            limit = max(1, min(limit, 50))
+            result = start_crawl(query, limit)
+            self.send_json(result, 200 if result.get("started") else 409)
+            return
+        if parsed.path == "/api/crawler/retry-tender":
+            body = _read_json_body(self.rfile, self.headers)
+            number = str(body.get("number", "")).strip()
+            if not number:
+                self.send_json({"error": "number обязателен"}, 400)
+                return
+            if db.active_run() is not None:
+                self.send_json({"error": "already_running"}, 409)
+                return
+            self.send_json(fetcher.retry_tender(number))
+            return
+        if parsed.path == "/api/crawler/retry-run":
+            body = _read_json_body(self.rfile, self.headers)
+            try:
+                run_id = int(body.get("run_id", 0))
+            except (TypeError, ValueError):
+                run_id = 0
+            if not run_id:
+                self.send_json({"error": "run_id обязателен"}, 400)
+                return
+            result = start_retry_run(run_id)
+            self.send_json(result, 200 if result.get("started") else 409)
+            return
+        self.send_json({"error": "Not found"}, 404)
+
+    def handle_upload(self) -> None:
         form = _parse_multipart(self.rfile, self.headers)
         upload = form.get("file")
         if upload is None or not getattr(upload, "filename", ""):
@@ -242,11 +473,43 @@ class TenderHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def serve_file(self, doc_id_raw: str) -> None:
+        """Отдаёт скачанный файл по id документа. Защита от path traversal: реальный путь
+        обязан лежать внутри TENDERS_DIR. Стримит с диска, не держа файл целиком в памяти."""
+        try:
+            doc_id = int(doc_id_raw)
+        except (TypeError, ValueError):
+            self.send_json({"error": "Некорректный id"}, 400)
+            return
+        conn = db.connect()
+        try:
+            doc = db.document_by_id(conn, doc_id)
+        finally:
+            conn.close()
+        if doc is None or not doc["path"] or doc["status"] == "failed":
+            self.send_json({"error": "Файл не найден"}, 404)
+            return
+        target = Path(doc["path"]).resolve()
+        base = db.TENDERS_DIR.resolve()
+        if not str(target).startswith(str(base) + os.sep) or not target.is_file():
+            self.send_json({"error": "Файл не найден"}, 404)
+            return
+        mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        disposition = urllib.parse.quote(target.name)
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(target.stat().st_size))
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{disposition}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with target.open("rb") as handle:
+            shutil.copyfileobj(handle, self.wfile)
+
     def serve_static(self, path: str) -> None:
         if path in {"", "/"}:
             path = "/index.html"
         target = (STATIC_DIR / path.lstrip("/")).resolve()
-        if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.exists() or not target.is_file():
+        if not str(target).startswith(str(STATIC_DIR.resolve()) + os.sep) or not target.exists() or not target.is_file():
             self.send_json({"error": "Not found"}, 404)
             return
         content = target.read_bytes()

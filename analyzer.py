@@ -30,8 +30,12 @@ def _build_full_text(conn, tender: dict[str, Any]) -> str:
     parts: list[str] = []
     docs = db.documents_for(conn, tender["number"])
     for doc in docs:
-        path = Path(doc["path"])
-        text = extract_text_from_file(path) if path.exists() else (doc["extracted_text"] or "")
+        # архивы уже распакованы в стадии 1 (их члены — отдельные строки 'unpacked'); сам .zip
+        # пропускаем, иначе двойной счёт. 'failed' — без файла на диске, извлекать нечего.
+        if doc["status"] in ("archive", "failed"):
+            continue
+        path = Path(doc["path"]) if doc["path"] else None
+        text = extract_text_from_file(path) if path and path.exists() else (doc["extracted_text"] or "")
         highlights = collect_evidence(tender, text)
         db.update_document_text(conn, doc["id"], text, highlights)
         if text.strip():

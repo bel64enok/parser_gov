@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS tenders (
     source          TEXT,
     fetched_at      TEXT,
     pipeline_status TEXT,            -- fetched | analyzed | error
-    error           TEXT
+    error           TEXT,
+    run_id          INTEGER          -- прогон, в котором тендер скачан (FK pipeline_runs.id)
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -50,6 +51,12 @@ CREATE TABLE IF NOT EXISTS documents (
     extracted_text  TEXT,
     highlights_json TEXT,
     downloaded_at   TEXT,
+    status          TEXT DEFAULT 'ok',   -- ok | failed | archive | unpacked
+    error           TEXT DEFAULT '',
+    size_bytes      INTEGER,
+    source_url      TEXT DEFAULT '',
+    parent_doc_id   INTEGER,             -- для member архива → id строки самого архива
+    run_id          INTEGER,
     UNIQUE(tender_number, filename)
 );
 
@@ -89,7 +96,15 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     status          TEXT,            -- running | completed | error
     error           TEXT,
     ai_enabled      INTEGER,
-    ai_model        TEXT
+    ai_model        TEXT,
+    kind            TEXT DEFAULT 'pipeline',  -- pipeline (cron) | fetch (ручной сбор)
+    stage           TEXT DEFAULT 'full',      -- full | fetch | retry
+    tenders_total    INTEGER DEFAULT 0,
+    tenders_done     INTEGER DEFAULT 0,
+    files_downloaded INTEGER DEFAULT 0,
+    files_unpacked   INTEGER DEFAULT 0,
+    files_failed     INTEGER DEFAULT 0,
+    progress_at      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tenders_status ON tenders(pipeline_status);
@@ -98,11 +113,47 @@ CREATE INDEX IF NOT EXISTS idx_runs_started ON pipeline_runs(started_at);
 """
 
 
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(conn: sqlite3.Connection, table: str, name: str, decl: str) -> None:
+    if name not in _columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Идемпотентно добавляет недостающие колонки в существующую БД (SQLite не умеет
+    ADD COLUMN IF NOT EXISTS). Для свежей БД колонки уже созданы из SCHEMA — ALTER пропускается.
+    Индексы на новые колонки создаём здесь, а не в SCHEMA: к моменту executescript(SCHEMA)
+    на старой БД колонок ещё нет и CREATE INDEX упал бы."""
+    _add_column(conn, "documents", "status", "TEXT DEFAULT 'ok'")
+    _add_column(conn, "documents", "error", "TEXT DEFAULT ''")
+    _add_column(conn, "documents", "size_bytes", "INTEGER")
+    _add_column(conn, "documents", "source_url", "TEXT DEFAULT ''")
+    _add_column(conn, "documents", "parent_doc_id", "INTEGER")
+    _add_column(conn, "documents", "run_id", "INTEGER")
+    _add_column(conn, "tenders", "run_id", "INTEGER")
+    _add_column(conn, "pipeline_runs", "kind", "TEXT DEFAULT 'pipeline'")
+    _add_column(conn, "pipeline_runs", "stage", "TEXT DEFAULT 'full'")
+    _add_column(conn, "pipeline_runs", "tenders_total", "INTEGER DEFAULT 0")
+    _add_column(conn, "pipeline_runs", "tenders_done", "INTEGER DEFAULT 0")
+    _add_column(conn, "pipeline_runs", "files_downloaded", "INTEGER DEFAULT 0")
+    _add_column(conn, "pipeline_runs", "files_unpacked", "INTEGER DEFAULT 0")
+    _add_column(conn, "pipeline_runs", "files_failed", "INTEGER DEFAULT 0")
+    _add_column(conn, "pipeline_runs", "progress_at", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_tender ON documents(tender_number)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
+    conn.commit()
+
+
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    conn.execute("PRAGMA busy_timeout=4000")  # переживаем кратковременные блокировки воркер↔polling
+    _migrate(conn)
     return conn
 
 
@@ -118,7 +169,7 @@ def upsert_tender(conn: sqlite3.Connection, tender: dict[str, Any]) -> None:
         "number", "title", "customer", "price", "method", "law",
         "publish_date", "deadline", "publish_date_iso", "deadline_iso",
         "appeared_at", "okpd2", "status", "contract_status", "url",
-        "source", "fetched_at", "pipeline_status", "error",
+        "source", "fetched_at", "pipeline_status", "error", "run_id",
     )
     values = [tender.get(col) for col in columns]
     placeholders = ", ".join("?" for _ in columns)
@@ -139,13 +190,79 @@ def set_status(conn: sqlite3.Connection, number: str, status: str, error: str = 
     conn.commit()
 
 
-def add_document(conn: sqlite3.Connection, tender_number: str, filename: str, path: str, doc_type: str) -> None:
+def add_document(
+    conn: sqlite3.Connection,
+    tender_number: str,
+    filename: str,
+    path: str,
+    doc_type: str,
+    status: str = "ok",
+    error: str = "",
+    size_bytes: int | None = None,
+    source_url: str = "",
+    parent_doc_id: int | None = None,
+    run_id: int | None = None,
+) -> int:
+    """Пишет строку документа (INSERT OR IGNORE по UNIQUE) и возвращает её id.
+
+    При IGNORE lastrowid=0, поэтому id всегда дочитываем обратным SELECT — он нужен,
+    чтобы привязать members архива к parent_doc_id.
+    """
     conn.execute(
-        "INSERT OR IGNORE INTO documents (tender_number, filename, path, type, downloaded_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (tender_number, filename, path, doc_type, datetime.now().isoformat(timespec="seconds")),
+        "INSERT OR IGNORE INTO documents "
+        "(tender_number, filename, path, type, status, error, size_bytes, source_url, "
+        "parent_doc_id, run_id, downloaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            tender_number, filename, path, doc_type, status, error, size_bytes, source_url,
+            parent_doc_id, run_id, datetime.now().isoformat(timespec="seconds"),
+        ),
     )
     conn.commit()
+    row = conn.execute(
+        "SELECT id FROM documents WHERE tender_number=? AND filename=?",
+        (tender_number, filename),
+    ).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def upsert_document(
+    conn: sqlite3.Connection,
+    tender_number: str,
+    filename: str,
+    path: str,
+    doc_type: str,
+    status: str = "ok",
+    error: str = "",
+    size_bytes: int | None = None,
+    source_url: str = "",
+    parent_doc_id: int | None = None,
+    run_id: int | None = None,
+) -> int:
+    """Как add_document, но при существующей строке (tender_number, filename) обновляет её.
+
+    Нужно для ретрая: INSERT OR IGNORE проглотил бы повтор, оставив строку в статусе 'failed';
+    здесь же она перезаписывается (failed → ok с новым путём/размером). parent_doc_id/run_id
+    при обновлении не трогаем — сохраняем исходную привязку к архиву и прогону.
+    """
+    conn.execute(
+        "INSERT INTO documents "
+        "(tender_number, filename, path, type, status, error, size_bytes, source_url, "
+        "parent_doc_id, run_id, downloaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(tender_number, filename) DO UPDATE SET "
+        "path=excluded.path, type=excluded.type, status=excluded.status, error=excluded.error, "
+        "size_bytes=excluded.size_bytes, source_url=excluded.source_url, "
+        "downloaded_at=excluded.downloaded_at",
+        (
+            tender_number, filename, path, doc_type, status, error, size_bytes, source_url,
+            parent_doc_id, run_id, datetime.now().isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id FROM documents WHERE tender_number=? AND filename=?",
+        (tender_number, filename),
+    ).fetchone()
+    return int(row["id"]) if row else 0
 
 
 def update_document_text(conn: sqlite3.Connection, doc_id: int, text: str, highlights: list[dict[str, str]]) -> None:
@@ -159,6 +276,29 @@ def update_document_text(conn: sqlite3.Connection, doc_id: int, text: str, highl
 def documents_for(conn: sqlite3.Connection, tender_number: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM documents WHERE tender_number=? ORDER BY id", (tender_number,)
+    ).fetchall()
+
+
+def document_by_id(conn: sqlite3.Connection, doc_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+
+
+def failed_documents_for_tender(conn: sqlite3.Connection, tender_number: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM documents WHERE tender_number=? AND status='failed' ORDER BY id",
+        (tender_number,),
+    ).fetchall()
+
+
+def failed_documents_for_run(conn: sqlite3.Connection, run_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM documents WHERE run_id=? AND status='failed' ORDER BY id", (run_id,)
+    ).fetchall()
+
+
+def tenders_for_run(conn: sqlite3.Connection, run_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM tenders WHERE run_id=? ORDER BY fetched_at", (run_id,)
     ).fetchall()
 
 
@@ -360,26 +500,82 @@ def pipeline_status() -> dict[str, Any]:
         conn.close()
 
 
-def start_run(query: str, limit: int) -> int:
-    """Открывает запись прогона (status='running'). Возвращает id для finish_run."""
+def start_run(query: str, limit: int, kind: str = "pipeline", stage: str = "full") -> int:
+    """Открывает запись прогона (status='running'). Возвращает id для finish_run.
+
+    kind: 'pipeline' (cron, обе стадии) | 'fetch' (ручной сбор из UI, только стадия 1).
+    stage: 'full' | 'fetch' | 'retry'.
+    """
     import ai as ai_module  # lazy — db.py не должен тянуть openai
     configured = ai_module.is_configured()
     conn = connect()
     try:
         cur = conn.execute(
             "INSERT INTO pipeline_runs "
-            "(started_at, query, limit_n, status, ai_enabled, ai_model) "
-            "VALUES (?, ?, ?, 'running', ?, ?)",
+            "(started_at, query, limit_n, status, ai_enabled, ai_model, kind, stage) "
+            "VALUES (?, ?, ?, 'running', ?, ?, ?, ?)",
             (
                 datetime.now().isoformat(timespec="seconds"),
                 query,
                 int(limit),
                 int(configured),
                 ai_module.MODEL if configured else "rules-only",
+                kind,
+                stage,
             ),
         )
         conn.commit()
         return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def active_run() -> dict[str, Any] | None:
+    """Единственный незавершённый прогон ('running' свежее STALE_RUN_MIN), иначе None.
+
+    Используется как single-run guard перед ручным сбором. recent_runs() уже понижает
+    протухшие 'running' до 'stalled', поэтому зависший воркер не блокирует запуски навсегда.
+    """
+    for r in recent_runs(20):
+        if r.get("status") == "running":
+            return r
+    return None
+
+
+def update_run_progress(
+    run_id: int,
+    *,
+    tenders_total: int | None = None,
+    tenders_done: int | None = None,
+    files_downloaded: int | None = None,
+    files_unpacked: int | None = None,
+    files_failed: int | None = None,
+) -> None:
+    """Обновляет счётчики прогресса прогона. Открывает собственное короткое соединение —
+    sqlite3-соединения нельзя шарить между тредами, а это вызывается из воркер-треда."""
+    if not run_id:
+        return
+    sets: list[str] = []
+    params: list[Any] = []
+    for col, val in (
+        ("tenders_total", tenders_total),
+        ("tenders_done", tenders_done),
+        ("files_downloaded", files_downloaded),
+        ("files_unpacked", files_unpacked),
+        ("files_failed", files_failed),
+    ):
+        if val is not None:
+            sets.append(f"{col}=?")
+            params.append(val)
+    if not sets:
+        return
+    sets.append("progress_at=?")
+    params.append(datetime.now().isoformat(timespec="seconds"))
+    params.append(run_id)
+    conn = connect()
+    try:
+        conn.execute(f"UPDATE pipeline_runs SET {', '.join(sets)} WHERE id=?", params)
+        conn.commit()
     finally:
         conn.close()
 

@@ -27,7 +27,15 @@ def main() -> None:
     analyze_summary: dict = {}
     source = "fallback"
     try:
-        fetch_summary = fetcher.fetch_new(query, limit)
+        # run_id + прогресс: тендеры/документы привязываются к прогону (drill-down во вкладке
+        # «Сбор документов») и cron-прогон тоже получает счётчики файлов.
+        def _progress(done: int, total: int, dl: int, up: int, failed: int) -> None:
+            db.update_run_progress(
+                run_id, tenders_total=total, tenders_done=done,
+                files_downloaded=dl, files_unpacked=up, files_failed=failed,
+            )
+
+        fetch_summary = fetcher.fetch_new(query, limit, progress=_progress, run_id=run_id)
         source = fetch_summary.get("source", "fallback")
         analyze_summary = analyzer.analyze_new()
         db.finish_run(run_id, fetch_summary, analyze_summary, source, "completed", "")

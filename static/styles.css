@@ -1533,6 +1533,17 @@ mark {
   100% { background: transparent; }
 }
 
+/* Блок структурированной карточки в drawer «Тендеров» */
+.agent-card-block {
+  margin-top: 22px;
+}
+
+.agent-card-block > h3 {
+  margin: 0 0 12px;
+  color: var(--black);
+  font-size: 20px;
+}
+
 /* Структурированная карточка */
 .card-header {
   margin-bottom: 18px;

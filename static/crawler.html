@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tender Radar — Сбор документов</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="beeline-logo" aria-label="Beeline"><span></span></div>
+        <div>
+          <strong>beeline Tender Radar</strong>
+          <span>Сбор документов · стадия 1</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/admin.html">Мониторинг</a>
+        <a href="/crawler.html" aria-current="page">Сбор документов</a>
+        <a href="/">Тендеры</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Контрольная панель: запуск сбора + живой прогресс -->
+      <section class="crawl-control" aria-label="Запуск сбора документов">
+        <form class="crawl-form" id="crawlForm">
+          <label class="crawl-field">
+            <span>Запрос</span>
+            <input type="text" id="crawlQuery" value="мобильная связь" autocomplete="off" />
+          </label>
+          <label class="crawl-field crawl-field--limit">
+            <span>Лимит</span>
+            <input type="number" id="crawlLimit" value="10" min="1" max="50" />
+          </label>
+          <button type="submit" id="crawlStart">Запустить сбор</button>
+        </form>
+        <p class="crawl-hint" id="crawlHint">
+          Скачивает карточку и вложения, распаковывает архивы на диск. Анализ догонит cron.
+        </p>
+        <div class="crawl-progress" id="crawlProgress" hidden>
+          <div class="crawl-progress__head">
+            <span class="admin-badge admin-badge--pulse">
+              <span class="stage-dot dot-warn"></span><span id="crawlProgressLabel">Идёт сбор</span>
+            </span>
+            <span class="crawl-progress__counters" id="crawlCounters"></span>
+          </div>
+          <div class="crawl-bar" role="progressbar" aria-label="Прогресс сбора">
+            <div class="crawl-bar__fill" id="crawlBarFill"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Master: список запусков -->
+      <section class="admin-section" id="runsView" aria-label="Запуски сбора">
+        <div class="admin-section__head">
+          <h2>Запуски</h2>
+          <span class="muted-text" id="runsCount"></span>
+        </div>
+        <p class="crawl-summary" id="crawlSummary"></p>
+        <div class="admin-table-wrap">
+          <table class="admin-table" id="runsTable">
+            <thead>
+              <tr>
+                <th>Статус</th>
+                <th>Тип</th>
+                <th>Стадия</th>
+                <th>Запрос</th>
+                <th>Тендеров</th>
+                <th>Файлов</th>
+                <th>Упало</th>
+                <th>Длит.</th>
+                <th>Начат</th>
+              </tr>
+            </thead>
+            <tbody id="runsBody">
+              <tr><td colspan="9" class="admin-empty">Загрузка…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Detail: тендеры выбранного запуска -->
+      <section class="admin-section" id="runView" hidden aria-label="Тендеры запуска">
+        <nav class="crumbs">
+          <button type="button" class="link-button" id="backToRuns">← Запуски</button>
+        </nav>
+        <div class="admin-section__head">
+          <h2 id="runTitle">Запуск</h2>
+          <button type="button" id="retryRunBtn" hidden>Повторить всё упавшее</button>
+        </div>
+        <p class="crawl-summary" id="runMeta"></p>
+        <div class="admin-table-wrap">
+          <table class="admin-table" id="runTendersTable">
+            <thead>
+              <tr>
+                <th>№</th>
+                <th>Название</th>
+                <th>Файлов</th>
+                <th>Распаковано</th>
+                <th>Упало</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody id="runTendersBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- Drawer: дерево файлов тендера -->
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <aside
+      class="detail-drawer"
+      id="detailDrawer"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="drawerTitle"
+      aria-hidden="true"
+    >
+      <div class="detail-drawer__head">
+        <h2 id="drawerTitle">Документы тендера</h2>
+        <button type="button" class="drawer-close" id="drawerClose" aria-label="Закрыть">×</button>
+      </div>
+      <div id="detailBody" class="detail-drawer__body"></div>
+    </aside>
+
+    <script src="/crawler.js"></script>
+  </body>
+</html>

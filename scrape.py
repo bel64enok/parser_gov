@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import html
+import os
 import re
+import shutil
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -176,14 +179,75 @@ def _guess_extension(filename: str, content_type: str) -> str:
     return ".bin"
 
 
-def fetch_attachments(tender: dict[str, Any], dest_dir: Path, limit: int = 20) -> list[dict[str, str]]:
-    """Best-effort: находит и скачивает вложения извещения в dest_dir.
+def _unpack_archive(zip_path: Path, dest_dir: Path, source_url: str) -> list[dict[str, Any]]:
+    """Распаковывает .zip в dest_dir/<stem>_unpacked/ и возвращает member-записи.
 
-    Структура страниц ЕИС нестабильна; при любой неудаче возвращает [], не бросая исключений.
+    Защита от zip-slip: путь каждого члена резолвится и обязан лежать внутри папки распаковки.
+    Без рекурсии в стадии 1 — вложенный .zip остаётся отдельным member, его развернёт стадия 2.
+    Имя члена в БД неймспейсится стемом архива (UNIQUE(tender, filename) — иначе коллизии).
+    """
+    members: list[dict[str, Any]] = []
+    base = (dest_dir / f"{zip_path.stem}_unpacked").resolve()
+    stem = zip_path.stem
+
+    try:
+        archive = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        return [{
+            "filename": f"{stem} (архив повреждён)", "path": "", "type": "zip",
+            "status": "failed", "error": f"{exc.__class__.__name__}: {exc}",
+            "size_bytes": None, "source_url": source_url, "is_member": True,
+            "_parent_path": str(zip_path),
+        }]
+
+    with archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            member_name = Path(info.filename).name or "file"
+            member_type = Path(member_name).suffix.lstrip(".").lower() or "file"
+            key = f"{stem}/{info.filename}"
+            target = (base / info.filename).resolve()
+            if not str(target).startswith(str(base) + os.sep):
+                members.append({
+                    "filename": f"{key} (zip-slip отклонён)", "path": "", "type": member_type,
+                    "status": "failed", "error": "zip-slip: путь за пределами папки распаковки",
+                    "size_bytes": info.file_size, "source_url": source_url,
+                    "is_member": True, "_parent_path": str(zip_path),
+                })
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            except (OSError, zipfile.BadZipFile, RuntimeError) as exc:  # RuntimeError: zip с паролем
+                members.append({
+                    "filename": key, "path": "", "type": member_type,
+                    "status": "failed", "error": f"{exc.__class__.__name__}: {exc}",
+                    "size_bytes": info.file_size, "source_url": source_url,
+                    "is_member": True, "_parent_path": str(zip_path),
+                })
+                continue
+            members.append({
+                "filename": key, "path": str(target), "type": member_type,
+                "status": "unpacked", "error": "", "size_bytes": info.file_size,
+                "source_url": source_url, "is_member": True, "_parent_path": str(zip_path),
+            })
+    return members
+
+
+def fetch_attachments(tender: dict[str, Any], dest_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
+    """Best-effort: находит, скачивает и распаковывает вложения извещения в dest_dir.
+
+    Возвращает список записей с per-файловым статусом (в т.ч. упавшие — они больше не теряются):
+    ``{filename, path, type, status (ok|failed|archive|unpacked), error, size_bytes,
+    source_url, is_member, _parent_path}``. Для архива запись со status='archive' идёт сразу перед
+    его members (status='unpacked'/'failed') — fetcher так связывает parent_doc_id по порядку.
+    Структура страниц ЕИС нестабильна; сетевые сбои фиксируются записью status='failed', а не молча.
     """
     number = tender.get("number", "")
     law = tender.get("law", "")
-    saved: list[dict[str, str]] = []
+    saved: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     download_links: list[str] = []
 
@@ -204,20 +268,49 @@ def fetch_attachments(tender: dict[str, Any], dest_dir: Path, limit: int = 20) -
     for index, link in enumerate(download_links[:limit], start=1):
         try:
             body, content_type, server_name = http_get(link, timeout=30)
-        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError):
+        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError) as exc:
+            saved.append({
+                "filename": f"вложение {index} (не скачано)", "path": "", "type": "file",
+                "status": "failed", "error": f"{exc.__class__.__name__}: {exc}",
+                "size_bytes": None, "source_url": link, "is_member": False, "_parent_path": None,
+            })
             continue
         if not body:
+            saved.append({
+                "filename": f"вложение {index} (пустой ответ)", "path": "", "type": "file",
+                "status": "failed", "error": "пустой ответ от сервера", "size_bytes": 0,
+                "source_url": link, "is_member": False, "_parent_path": None,
+            })
             continue
         base_name = server_name or f"attachment_{index}"
         ext = _guess_extension(base_name, content_type)
         if not Path(base_name).suffix:
             base_name = f"{base_name}{ext}"
         safe_name = re.sub(r"[^A-Za-zА-Яа-я0-9_.() -]+", "_", Path(base_name).name)[:120]
+        file_type = ext.lstrip(".") or "file"
         target = dest_dir / safe_name
         try:
             target.write_bytes(body)
-        except OSError:
+        except OSError as exc:
+            saved.append({
+                "filename": safe_name, "path": "", "type": file_type,
+                "status": "failed", "error": f"запись на диск: {exc}", "size_bytes": len(body),
+                "source_url": link, "is_member": False, "_parent_path": None,
+            })
             continue
-        saved.append({"filename": safe_name, "path": str(target), "type": ext.lstrip(".") or "file"})
+
+        if file_type == "zip":
+            saved.append({
+                "filename": safe_name, "path": str(target), "type": "zip",
+                "status": "archive", "error": "", "size_bytes": len(body),
+                "source_url": link, "is_member": False, "_parent_path": None,
+            })
+            saved.extend(_unpack_archive(target, dest_dir, link))
+        else:
+            saved.append({
+                "filename": safe_name, "path": str(target), "type": file_type,
+                "status": "ok", "error": "", "size_bytes": len(body),
+                "source_url": link, "is_member": False, "_parent_path": None,
+            })
 
     return saved

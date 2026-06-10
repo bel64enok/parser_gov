@@ -29,6 +29,15 @@ def _row_to_tender(row) -> dict[str, Any]:
     return {field: row[field] for field in _TENDER_FIELDS}
 
 
+def _progress_callback(ar_id: int):
+    """Колбэк живого прогресса агента → пишет метрики (шаги/вызовы/токены/действие)
+    в agent_runs ПО ХОДУ прогона, чтобы UI не показывал «0 вызовов, 0 токенов»."""
+    def cb(text: str, step_count: int = 0, tool_calls: int = 0, tokens: int = 0) -> None:
+        db.update_agent_progress(ar_id, step_count=step_count, tool_calls=tool_calls,
+                                 tokens=tokens, current_step=text)
+    return cb
+
+
 def _build_documents(conn, tender: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     """Извлекает текст документов тендера, сохраняет его и highlights в БД.
 
@@ -88,7 +97,10 @@ def analyze_new(run_id: int | None = None, progress: ProgressCb | None = None) -
     use_ai = agent.is_configured()
     print(f"[analyze] ИИ-агент {'подключён' if use_ai else 'не настроен — анализ на правилах'}")
     try:
-        rows = db.tenders_by_status(conn, "fetched")
+        # При настроенном шлюзе очередь = все тендеры без карточки агента (включая ранее
+        # помеченные 'analyzed' rules-only/упавшие) — иначе они застревали бы без карточки.
+        # Без шлюза агент бессмысленен, поэтому обрабатываем только свежие 'fetched'.
+        rows = db.tenders_awaiting_agent(conn) if use_ai else db.tenders_by_status(conn, "fetched")
         total = len(rows)
         if progress:
             progress(0, total)
@@ -106,7 +118,8 @@ def analyze_new(run_id: int | None = None, progress: ProgressCb | None = None) -
                     ar_id = db.create_agent_run(conn, number, run_id, agent.MODEL)
                     result = agent.run_agent(
                         tender, documents,
-                        on_step=lambda text, _id=ar_id: db.set_agent_current_step(_id, text),
+                        on_step=_progress_callback(ar_id),
+                        evidence=collect_evidence(tender, full_text),
                     )
                     card = result.get("card")
                     db.finish_agent_run(
@@ -157,7 +170,8 @@ def reanalyze_tender(number: str, run_id: int | None = None) -> dict[str, Any]:
             ar_id = db.create_agent_run(conn, number, run_id, agent.MODEL)
             result = agent.run_agent(
                 tender, documents,
-                on_step=lambda text, _id=ar_id: db.set_agent_current_step(_id, text),
+                on_step=_progress_callback(ar_id),
+                evidence=collect_evidence(tender, full_text),
             )
             card = result.get("card")
             db.finish_agent_run(

@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/bin/python",
       "runtimeArgs": ["app.py"],
       "port": 8000
+    },
+    {
+      "name": "tender-radar-preview",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "PORT=9001 .venv/bin/python app.py"],
+      "port": 9001
     }
   ]
 }

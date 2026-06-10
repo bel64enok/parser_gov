@@ -10,7 +10,28 @@ import json
 import os
 from typing import Any
 
-MODEL = os.environ.get("RMR_MODEL", "gpt-oss-120b")
+def _provider() -> str:
+    return (os.environ.get("AI_PROVIDER") or "rmr").strip().lower()
+
+
+def active_config() -> dict[str, str]:
+    """Настройки активного провайдера ИИ-шлюза (выбор через AI_PROVIDER=rmr|openrouter)."""
+    if _provider() == "openrouter":
+        return {
+            "provider": "openrouter",
+            "base_url": os.environ.get("OPENROUTER_GATEWAY_URL", "https://openrouter.ai/api/v1"),
+            "api_key": os.environ.get("OPENROUTER_API_KEY", ""),
+            "model": os.environ.get("OPENROUTER_MODEL", "openai/gpt-oss-120b:free"),
+        }
+    return {
+        "provider": "rmr",
+        "base_url": os.environ.get("RMR_GATEWAY_URL", ""),
+        "api_key": os.environ.get("RMR_API_KEY", ""),
+        "model": os.environ.get("RMR_MODEL", "gpt-oss-120b"),
+    }
+
+
+MODEL = active_config()["model"]
 TEXT_BUDGET = 30_000  # символов документации, отдаваемых модели
 
 SYSTEM_PROMPT = (
@@ -28,20 +49,27 @@ SYSTEM_PROMPT = (
 EMPTY: dict[str, Any] = {}
 
 
-def _client():
-    base_url = os.environ.get("RMR_GATEWAY_URL")
-    api_key = os.environ.get("RMR_API_KEY")
-    if not base_url or not api_key:
+def build_client(max_retries: int = 2, timeout: float = 40):
+    """OpenAI-совместимый клиент активного провайдера (RMR или OpenRouter) или None."""
+    c = active_config()
+    if not c["base_url"] or not c["api_key"]:
         return None
     try:
         from openai import OpenAI
     except Exception:
         return None
-    return OpenAI(base_url=base_url, api_key=api_key)
+    headers = {"X-Title": "Tender Radar"} if c["provider"] == "openrouter" else {}
+    return OpenAI(base_url=c["base_url"], api_key=c["api_key"],
+                  max_retries=max_retries, timeout=timeout, default_headers=headers)
+
+
+def _client():
+    return build_client()
 
 
 def is_configured() -> bool:
-    return bool(os.environ.get("RMR_GATEWAY_URL") and os.environ.get("RMR_API_KEY"))
+    c = active_config()
+    return bool(c["base_url"] and c["api_key"])
 
 
 def ai_enrich(tender: dict[str, Any], full_text: str) -> dict[str, Any]:

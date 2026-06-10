@@ -3,7 +3,7 @@
   --yellow-dark: #edbd00;
   --black: #111111;
   --ink: #252525;
-  --muted: #707070;
+  --muted: #6a6a6a; /* ≥4.5:1 на --white и --soft (WCAG AA для мелкого текста) */
   --line: #e8e8e8;
   --soft: #f6f6f3;
   --white: #ffffff;
@@ -12,6 +12,16 @@
   --warn: #d48a00;
   --z-backdrop: 40;
   --z-drawer: 50;
+  --focus: #1a73e8; /* видимое кольцо фокуса (контраст к жёлтому и белому) */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-fast: 150ms;
+}
+
+/* Единое видимое кольцо фокуса для клавиатурной навигации (product a11y) */
+:where(button, a, input, [tabindex], [role="button"], summary):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 * {
@@ -130,7 +140,7 @@ main {
 }
 
 .hero {
-  padding: clamp(30px, 6vw, 72px) 0 24px;
+  padding: clamp(24px, 4vw, 40px) 0 20px;
 }
 
 .eyebrow {
@@ -152,19 +162,26 @@ p {
 }
 
 h1 {
-  max-width: 880px;
-  margin-bottom: 18px;
+  max-width: 720px;
+  margin-bottom: 14px;
   color: var(--black);
-  font-size: clamp(44px, 7vw, 86px);
-  line-height: 0.95;
-  letter-spacing: 0;
+  font-size: clamp(32px, 4vw, 44px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+h2,
+h3 {
+  text-wrap: balance;
 }
 
 .hero-copy > p:last-child {
-  max-width: 690px;
-  color: #424242;
-  font-size: 18px;
-  line-height: 1.45;
+  max-width: 65ch;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.5;
+  text-wrap: pretty;
 }
 
 .tag-filter-list {
@@ -304,6 +321,21 @@ input {
   border: 1px solid #cfcfcf;
   border-radius: 6px;
   background: #fff;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+
+input:hover {
+  border-color: var(--muted);
+}
+
+input:focus {
+  border-color: var(--black);
+  outline: none;
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }
 
 button {
@@ -315,10 +347,17 @@ button {
   color: var(--black);
   font-weight: 700;
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
 }
 
 button:hover {
   background: var(--yellow-dark);
+}
+
+button:active {
+  transform: translateY(1px);
 }
 
 button:disabled {
@@ -569,12 +608,19 @@ h2 {
   border-radius: 8px;
   background: var(--white);
   cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
 }
 
 .tender-card:hover,
 .tender-card.active {
   border-color: var(--black);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+}
+
+.tender-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .tender-card.fresh {
@@ -781,6 +827,89 @@ h2 {
   border: 1px dashed #cfcfcf;
   border-radius: 8px;
   color: var(--muted);
+}
+
+/* ── Кнопка как переиспользуемый компонент (для <a>-CTA и кнопок) ──────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--black);
+  border-radius: 6px;
+  background: var(--yellow);
+  color: var(--black);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.btn--primary {
+  background: var(--yellow);
+}
+
+.btn--primary:hover {
+  background: var(--yellow-dark);
+}
+
+.btn--ghost {
+  background: var(--white);
+  border-color: var(--line);
+}
+
+.btn--ghost:hover {
+  background: var(--soft);
+  border-color: var(--muted);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+/* ── Обучающее пустое состояние (онбординг через empty state) ──────────── */
+.empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 48px 24px;
+  text-align: center;
+  border: 1px dashed #d4d4cf;
+  border-radius: 10px;
+  background: var(--white);
+}
+
+.empty-state__title {
+  margin: 0;
+  font-size: 18px;
+  color: var(--black);
+}
+
+.empty-state__text {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.empty-state .btn {
+  margin-top: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .btn,
+  input,
+  .tender-card {
+    transition: none;
+  }
+  button:active,
+  .btn:active {
+    transform: none;
+  }
 }
 
 .checklist {
@@ -1237,10 +1366,6 @@ mark {
     text-align: left;
   }
 
-  h1 {
-    font-size: 42px;
-  }
-
   .detail-drawer {
     width: 100%;
   }
@@ -1263,7 +1388,8 @@ mark {
 }
 
 .analysis-queue {
-  flex: 1 1 auto;
+  flex: 1 1 240px;
+  min-width: 0;
   color: var(--muted);
   font-size: 13px;
 }
@@ -1278,6 +1404,18 @@ mark {
 
 .analysis-control__head button {
   flex: 0 0 auto;
+}
+
+/* Длинные подписи в панели запуска (шлюз/модель, живой прогресс) переносятся,
+   а не обрезаются на узких экранах — .admin-badge по умолчанию nowrap. */
+.crawl-control .admin-badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.crawl-progress__head {
+  min-width: 0;
 }
 
 .analysis-gateway-off {
